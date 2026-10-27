@@ -1,0 +1,34 @@
+{
+  "meta": { "songId": 1, "revisionId": 1, "image": "x", "title": "Synthetic Riff", "artist": "Fretforge Tests",
+    "tracks": [ { "partId": 0, "instrumentId": 30, "title": "Lead Guitar", "tuning": [64,59,55,50,45,38] },
+                { "partId": 1, "instrumentId": 1024, "title": "Drums", "isDrums": true } ] },
+  "payloads": [
+    { "name": "Lead Guitar", "instrumentId": 30, "tuning": [64,59,55,50,45,38], "strings": 6,
+      "automations": { "tempo": [ { "measure": 0, "position": 0, "bpm": 132, "type": 4 } ] },
+      "newLyrics": [ { "line": 1, "offset": 1, "text": "Hel-lo world, this is a test" } ],
+      "measures": [
+        { "signature": [4,4], "marker": { "text": "Intro" }, "voices": [ { "beats": [
+          { "type": 4, "duration": [1,4], "chord": { "text": "D5" }, "palmMute": true, "notes": [ { "fret": 0, "string": 5 }, { "fret": 0, "string": 4 } ] },
+          { "type": 8, "duration": [1,8], "notes": [ { "fret": 5, "string": 2, "hp": true } ] },
+          { "type": 8, "duration": [1,8], "notes": [ { "fret": 7, "string": 2 } ] },
+          { "type": 8, "duration": [1,12], "tuplet": 3, "notes": [ { "fret": 5, "string": 1 } ] },
+          { "type": 8, "duration": [1,12], "tuplet": 3, "notes": [ { "fret": 7, "string": 1, "slide": "shift" } ] },
+          { "type": 8, "duration": [1,12], "tuplet": 3, "notes": [ { "fret": 8, "string": 1 } ] },
+          { "type": 4, "duration": [1,4], "letRing": true, "notes": [ { "fret": 7, "string": 2, "bend": { "tone": 100, "points": [ { "position": 0, "tone": 0 }, { "position": 30, "tone": 100 } ] } } ] }
+        ] } ] },
+        { "repeat": 2, "voices": [ { "beats": [
+          { "type": 1, "duration": [1,1], "rest": true, "notes": [ { "rest": true } ] }
+        ] } ] }
+      ] },
+    { "name": "Drums", "instrumentId": 1024, "strings": 6,
+      "measures": [
+        { "signature": [4,4], "voices": [ { "beats": [
+          { "type": 4, "duration": [1,4], "notes": [ { "fret": 36, "string": 0 }, { "fret": 42, "string": 1 } ] },
+          { "type": 4, "duration": [1,4], "notes": [ { "fret": 42, "string": 1 } ] },
+          { "type": 4, "duration": [1,4], "notes": [ { "fret": 38, "string": 2 }, { "fret": 42, "string": 1 } ] },
+          { "type": 4, "duration": [1,4], "notes": [ { "fret": 42, "string": 1 } ] }
+        ] } ] },
+        { "voices": [ { "beats": [ { "type": 1, "duration": [1,1], "rest": true, "notes": [ { "rest": true } ] } ] } ] }
+      ] }
+  ]
+}

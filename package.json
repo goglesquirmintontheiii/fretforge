@@ -1,0 +1,27 @@
+{
+  "name": "fretforge",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Self-hosted tab player, library and practice tool",
+  "workspaces": ["packages/shared", "packages/server", "packages/web", "packages/desktop"],
+  "scripts": {
+    "dev:server": "npm run dev -w @fretforge/server",
+    "dev:web": "npm run dev -w @fretforge/web",
+    "build": "npm run build -w @fretforge/web && npm run build -w @fretforge/server",
+    "build:desktop": "npm run build && npm run build -w @fretforge/desktop",
+    "typecheck": "tsc -p packages/shared && tsc -p packages/server && tsc -p packages/web && tsc -p packages/desktop",
+    "test": "vitest run",
+    "smoke": "node scripts/smoke.mjs",
+    "start": "node packages/server/dist/main.js"
+  },
+  "engines": { "node": ">=22" },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "vitest": "5.0.5",
+    "esbuild": "0.28.2",
+    "tsx": "4.23.15",
+    "@types/node": "^24.0.0",
+    "playwright": "1.63.0"
+  }
+}

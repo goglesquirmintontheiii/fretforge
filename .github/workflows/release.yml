@@ -1,0 +1,82 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  appimage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Smoke test the web app
+        run: |
+          npx playwright install --with-deps chromium
+          node scripts/smoke.mjs --shots smoke-shots
+      - name: Package the desktop app
+        run: |
+          npm run build -w @fretforge/desktop
+          cd packages/desktop && npx electron-builder --linux --dir
+      - name: Build the AppImage
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb
+          bash scripts/build-appimage.sh
+      - name: Self-test the AppImage
+        run: |
+          APP=$(ls release/Fretforge-*-x86_64.AppImage)
+          export APPIMAGE_EXTRACT_AND_RUN=1 FRETFORGE_SELFTEST="$PWD/smoke-shots/appimage.png" FRETFORGE_DATA="$RUNNER_TEMP/ff-data" FRETFORGE_LIBRARY="$RUNNER_TEMP/ff-lib"
+          timeout 120 xvfb-run -a -s "-screen 0 1400x900x24" "$APP" | tee selftest.log
+          grep -q "SELFTEST OK" selftest.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-screenshots
+          path: smoke-shots
+          if-no-files-found: ignore
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          NOTES="docs/releases/${TAG}.md"
+          [ -f "$NOTES" ] || NOTES=/dev/null
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Fretforge ${TAG#v}" --notes-file "$NOTES"
+          gh release upload "$TAG" release/*.AppImage release/*.sha256 --clobber
+
+  docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.name.outputs.image }}:${{ github.ref_name }}
+            ${{ steps.name.outputs.image }}:latest

@@ -1,0 +1,23 @@
+{
+  "name": "@fretforge/server",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "FRETFORGE_DATA=../../.dev-data FRETFORGE_LIBRARY=../../.dev-data/library tsx watch src/main.ts",
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@coderline/alphatab": "1.8.4",
+    "@fastify/cookie": "11.1.3",
+    "@fastify/multipart": "10.1.6",
+    "@fastify/static": "10.1.7",
+    "@fretforge/shared": "0.2.0",
+    "@tonejs/midi": "2.0.28",
+    "chokidar": "4.0.3",
+    "fastify": "5.12.7",
+    "minisearch": "7.2.0"
+  },
+  "main": "src/index.ts",
+  "types": "src/index.ts"
+}

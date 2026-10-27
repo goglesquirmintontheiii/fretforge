@@ -1,0 +1,13 @@
+# docker compose up -d   →   http://localhost:7700 (first visit asks you to set a password)
+services:
+  fretforge:
+    image: ghcr.io/goglesquirmintontheiii/fretforge:latest
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    ports:
+      - "7700:7700"
+    volumes:
+      - ./data:/data
+      - ./library:/library   # put your Guitar Pro / MusicXML / MIDI files here
+    restart: unless-stopped

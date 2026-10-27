@@ -1,0 +1,14 @@
+node_modules/
+dist/
+release/
+.dev-data/
+*.AppImage
+packages/desktop/app/
+.vite/
+coverage/
+test-results/
+.tools/
+packages/web/public/font/
+packages/web/public/soundfont/
+packages/desktop/resources/
+smoke-shots/
