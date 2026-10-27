@@ -69,6 +69,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
   const [looping, setLooping] = useState(false);
   const [trainer, setTrainer] = useState<Trainer>({ on: false, start: 0.6, step: 0.05, target: 1, passes: 2 });
   const [metro, setMetro] = useState(false);
+  const [metroVol, setMetroVol] = useState(0.8);
   const [countIn, setCountIn] = useState(false);
   const [transpose, setTranspose] = useState(p.transpose ?? 0);
   const [pitch, setPitch] = useState(p.pitchShift ?? 0);
@@ -85,11 +86,12 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
   const [pop, setPop] = useState<null | 'speed' | 'loop' | 'pitch' | 'view'>(null);
   const [tuner, setTuner] = useState(false);
   const [help, setHelp] = useState(false);
+  const chordLineRef = useRef<HTMLDivElement>(null);
   useWakeLock(playing);
 
   // Mirror state into a ref so alphaTab event handlers see current values
-  const st = useRef({ speed, master, metro, countIn, looping, mix, pitch, trainer, focus, visible, range, playing });
-  st.current = { speed, master, metro, countIn, looping, mix, pitch, trainer, focus, visible, range, playing };
+  const st = useRef({ speed, master, metro, metroVol, countIn, looping, mix, pitch, trainer, focus, visible, range, playing });
+  st.current = { speed, master, metro, metroVol, countIn, looping, mix, pitch, trainer, focus, visible, range, playing };
   const snapGuard = useRef(false);
   const shiftHeld = useRef(false);
   const lastTick = useRef(0);
@@ -103,7 +105,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
     const c = st.current;
     a.playbackSpeed = c.speed;
     a.masterVolume = c.master;
-    a.metronomeVolume = c.metro ? 1 : 0;
+    a.metronomeVolume = c.metro ? c.metroVol : 0;
     a.countInVolume = c.countIn ? 1 : 0;
     a.isLooping = c.looping;
     for (const t of s.tracks) {
@@ -266,7 +268,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
   }, [view, visible]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // audio settings
-  useEffect(() => { applyAudio(); }, [speed, master, metro, countIn, looping, mix, pitch, applyAudio]);
+  useEffect(() => { applyAudio(); }, [speed, master, metro, metroVol, countIn, looping, mix, pitch, applyAudio]);
 
   // display settings
   useEffect(() => {
@@ -422,6 +424,17 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
     return idx;
   })();
 
+  useEffect(() => {
+    const el = chordLineRef.current?.querySelector('.now');
+    if (el && playing) (el as HTMLElement).scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [curChordIdx, playing]);
+  const lastLyric = useRef<Element | null>(null);
+  useEffect(() => {
+    const el = document.querySelector('.lyrics span.now');
+    if (el && playing && el !== lastLyric.current) (el as HTMLElement).scrollIntoView({ block: 'center', behavior: 'smooth' });
+    lastLyric.current = el;
+  });
+
   const lyricGroups = useMemo(() => {
     if (!score || hasLyricsTrack < 0) return [] as { title: string | null; words: { id: number; order: number; text: string }[] }[];
     const groups: { title: string | null; words: { id: number; order: number; text: string }[] }[] = [];
@@ -440,6 +453,27 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
   const lyricOrder = currentOrder(orders.lyrics);
 
   const uniqueChords = [...new Set(chordTimeline.map((c) => c.name))];
+  // Tempo at the current bar, for "effective bpm" next to the speed control
+  const tempoNow = useMemo(() => {
+    if (!score) return song.tempo;
+    let t = score.tempo || song.tempo || 0;
+    for (const mb of score.masterBars) {
+      if (mb.index > bar) break;
+      const last = mb.tempoAutomations[mb.tempoAutomations.length - 1];
+      if (last) t = last.value;
+    }
+    return t;
+  }, [score, bar, song.tempo]);
+  // How far the track's tuning is from standard, when every string is shifted by the same amount
+  const stdOffset = useMemo(() => {
+    if (!focusTuning.length) return null;
+    const std = focusTuning.length === 4 ? [43, 38, 33, 28] : focusTuning.length === 5 ? [43, 38, 33, 28, 23] : focusTuning.length === 7 ? [64, 59, 55, 50, 45, 40, 35] : focusTuning.length === 6 ? [64, 59, 55, 50, 45, 40] : null;
+    if (!std) return null;
+    const d = focusTuning[0] - std[0];
+    return focusTuning.every((n, i) => n - std[i] === d) ? d : null;
+  }, [focusTuning.join()]); // eslint-disable-line react-hooks/exhaustive-deps
+  // With pitch shift, the guitar has to match the shifted playback
+  const tuneTo = focusTuning.length ? tuningName(focusTuning.map((n) => n + pitch)) : null;
   const lowFirst = [...focusTuning].reverse();
   const tuningLabel = focusTuning.length ? tuningName(focusTuning) : null;
   const sections = useMemo(() => (score?.masterBars ?? []).filter((m) => m.section?.text).map((m) => ({ bar: m.index, text: m.section!.text })), [score]);
@@ -476,7 +510,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
             </select>
           </label>
         )}
-        {tuningLabel && <span className="badge" title="Tuning">{tuningLabel}{summary?.capo ? ` · capo ${summary.capo}` : ''}</span>}
+        {tuningLabel && <span className={'badge' + (pitch ? ' accent' : '')} title={pitch ? `Written in ${tuningLabel}; with pitch shift, tune to ${tuneTo}` : 'Tuning'}>{pitch ? `Tune to ${tuneTo}` : tuningLabel}{summary?.capo ? ` · capo ${summary.capo}` : ''}</span>}
         <FavoriteButton song={song} onPatch={onPatch} />
         {song.source.url && <a className="btn sm ghost hide-sm" href={song.source.url} target="_blank" rel="noreferrer" title="Open the original page">{Icon.external({ size: 14 })}</a>}
         <SongMenu song={song} onToast={onToast} />
@@ -519,6 +553,12 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
                     </div>
                   );
                 })}
+                <div className="mixrow">
+                  <div className="nm">Metronome <span className="db">{metro ? gainToDb(metroVol) : 'off'}</span></div>
+                  <span />
+                  <button className={'ms s' + (metro ? ' on' : '')} aria-pressed={metro} title="Metronome on/off (M)" onClick={() => setMetro(!metro)}>{Icon.metronome({ size: 13 })}</button>
+                  <input type="range" min={0} max={1.5} step={0.01} value={metroVol} aria-label="Metronome volume" onChange={(e) => { setMetroVol(Number(e.target.value)); setMetro(true); }} onDoubleClick={() => setMetroVol(0.8)} />
+                </div>
                 <div className="mixrow" style={{ borderBottom: 0 }}>
                   <div className="nm">Master <span className="db">{gainToDb(master)}</span></div>
                   <span /><span />
@@ -554,7 +594,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
                     })}
                   </div>
                   <h3 style={{ fontSize: 14 }}>In order</h3>
-                  <div className="chordline">
+                  <div className="chordline" ref={chordLineRef}>
                     {chordTimeline.map((c, i) => (
                       <span key={c.id} className={i === curChordIdx ? 'now' : ''} title={`Bar ${c.bar + 1}`}>{capoShapeName(c.name, capo)}</span>
                     ))}
@@ -597,6 +637,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
             <span className="speed">
               <button className="btn ghost sm" style={{ padding: '2px 4px', minHeight: 0 }} onClick={() => setPop(pop === 'speed' ? null : 'speed')} aria-label="Speed presets"><b>{Math.round(speed * 100)}%</b></button>
               <input type="range" min={0.15} max={2} step={0.01} value={speed} onChange={(e) => changeSpeed(Number(e.target.value))} aria-label="Playback speed" onDoubleClick={() => setSpeed(1)} />
+              {tempoNow ? <span className="mono faint hide-sm" style={{ fontSize: 11.5 }} title="Effective tempo">{Math.round(tempoNow * speed)} bpm</span> : null}
             </span>
             {pop === 'speed' && (
               <div className="popover">
@@ -630,10 +671,10 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
                 <Stepper label="Transpose tab" hint="Rewrites the frets and chords" value={transpose} onChange={setTranspose} />
                 <Stepper label="Pitch shift" hint="Changes the sound only, e.g. play E♭ songs in standard tuning" value={pitch} onChange={setPitch} />
                 <div className="row" style={{ gap: 6 }}>
-                  <button className="chip" onClick={() => setPitch(-1)}>Half step down (E♭)</button>
-                  <button className="chip" onClick={() => setPitch(-2)}>Whole step down (D)</button>
+                  {stdOffset !== null && stdOffset !== 0 && <button className="chip" aria-pressed={pitch === -stdOffset} onClick={() => setPitch(-stdOffset)}>Play in standard tuning ({-stdOffset > 0 ? '+' : ''}{-stdOffset})</button>}
                   <button className="chip" onClick={() => { setPitch(0); setTranspose(0); }}>Reset</button>
                 </div>
+                {pitch !== 0 && tuneTo && <span className="muted" style={{ fontSize: 12 }}>Tune your guitar to: <b>{tuneTo}</b></span>}
               </div>
             )}
           </div>

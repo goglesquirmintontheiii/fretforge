@@ -17,6 +17,11 @@ Self-hosted tab player (Songsterr-style) heading toward AI stems, NAM amps/IRs a
 - Keep the player usable on a phone: no horizontal page scroll at 390px; everything works by keyboard.
 - The audio thread rules (no allocations/locks) apply from 0.6.0 when the native engine lands.
 
+## UI (owner's guideline)
+- Similar to Songsterr, not a 1:1 copy; small improvements welcome.
+- Professional and polished in every release; works on phones, tablets, laptops and desktops.
+- Snappy and light: no heavy work during playback; seeking near-instant; panels open smoothly.
+
 ## Checks before pushing
 ```sh
 npm run typecheck && npm test && npm run build && node scripts/smoke.mjs

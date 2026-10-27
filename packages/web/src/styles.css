@@ -215,3 +215,10 @@ input[type=range] { accent-color: var(--accent) }
 .authcard { width: min(400px, 100%); padding: 26px; display: grid; gap: 14px }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important } }
+
+/* touch screens get full-size targets */
+@media (pointer: coarse) {
+  .tbtn, .btn, .ms, .vis, .chip, select { min-height: 44px }
+  .ms, .vis { min-width: 40px }
+  .play { width: 52px; height: 52px }
+}
