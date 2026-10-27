@@ -126,6 +126,21 @@ def cmd_separate(args):
     src = args["input"]
     out = args["out"]
     model = args.get("model", "htdemucs_6s")
+    if not os.path.exists(src):
+        fail("The recording file is missing.")
+    if os.path.splitext(src)[1].lower() not in (".wav", ".flac"):
+        # Demucs decodes other formats with ffmpeg; libsndfile covers MP3/OGG without it
+        progress(0.005, "Decoding the recording")
+        try:
+            data, sr_in = sf.read(src, always_2d=True)
+        except Exception:
+            if not shutil.which("ffmpeg"):
+                fail("This audio format needs ffmpeg. Install ffmpeg, or add the recording as FLAC, WAV, MP3 or OGG.")
+            data = None
+        if data is not None:
+            wav = os.path.join(out, os.path.splitext(os.path.basename(src))[0] + ".wav")
+            sf.write(wav, data.astype(np.float32), sr_in)
+            src = wav
     device = pick_device(args.get("device", "auto"))
     progress(0.01, f"Separating with {model} on {device.upper()}")
     cmd = [sys.executable, "-m", "demucs", "-n", model, "--flac", "-d", "cuda" if device in ("cuda", "rocm") else device, "-o", out, src]
@@ -238,6 +253,17 @@ def cmd_align(args):
     ren, _ = librosa.load(args["render"], sr=sr, mono=True)
     with open(args["bars"]) as f:
         bars = json.load(f)
+    # leading silence (or a count-in) would pin the start of the match: trim both, align, add back
+    def lead_in(y):
+        rms = librosa.feature.rms(y=y, hop_length=hop)[0]
+        if rms.size == 0 or rms.max() <= 0:
+            return 0
+        idx = np.nonzero(rms > rms.max() * 0.03)[0]
+        return int(idx[0]) * hop if idx.size else 0
+    rec_start = lead_in(rec)
+    ren_start = lead_in(ren)
+    rec = rec[rec_start:]
+    ren = ren[ren_start:]
     progress(0.25, "Comparing harmony")
     c_rec = librosa.feature.chroma_cqt(y=rec, sr=sr, hop_length=hop)
     c_ren = librosa.feature.chroma_cqt(y=ren, sr=sr, hop_length=hop)
@@ -255,11 +281,14 @@ def cmd_align(args):
     rec_frames = wp[:, 1]
     to_ms = 1000.0 * hop / sr
     points = []
+    ren_off = 1000.0 * ren_start / sr
+    rec_off = 1000.0 * rec_start / sr
     for b in bars:
-        fr = b["ms"] / to_ms
+        fr = (b["ms"] - ren_off) / to_ms
         i = int(np.searchsorted(ren_frames, fr))
         i = min(max(i, 0), len(ren_frames) - 1)
-        points.append({"bar": b["bar"], "occurrence": b.get("occurrence", 0), "ms": float(rec_frames[i] * to_ms)})
+        extra = (fr - ren_frames[i]) * to_ms if fr < 0 else 0.0  # bars before the render's first sound
+        points.append({"bar": b["bar"], "occurrence": b.get("occurrence", 0), "ms": max(0.0, float(rec_frames[i] * to_ms + rec_off + extra))})
     # keep the points monotonic
     for i in range(1, len(points)):
         if points[i]["ms"] < points[i - 1]["ms"]:

@@ -48,7 +48,11 @@ export function Knob({ label, value, min, max, step = 0.1, def, unit = '', onCha
       >
         <svg width={size} height={size} aria-hidden="true">
           <path d={arc(-135, 135)} className="track" />
-          {frac > 0.005 && <path d={arc(-135, angle)} className="fill" />}
+          {min < 0 && max > 0 ? (() => {
+            // bipolar: fill from the zero position
+            const zero = -135 + ((0 - min) / (max - min)) * 270;
+            return Math.abs(angle - zero) > 1 ? <path d={angle > zero ? arc(zero, angle) : arc(angle, zero)} className="fill" /> : null;
+          })() : frac > 0.005 && <path d={arc(-135, angle)} className="fill" />}
           <circle cx={size / 2} cy={size / 2} r={r - 6} className="cap" />
           <line x1={size / 2} y1={size / 2} x2={size / 2 + (r - 9) * Math.sin((angle * Math.PI) / 180)} y2={size / 2 - (r - 9) * Math.cos((angle * Math.PI) / 180)} className="needle" />
         </svg>

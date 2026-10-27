@@ -135,11 +135,46 @@ async function start() {
     } catch (e) {
       console.log('selftest screenshot skipped:', String(e));
     }
-    console.log(ok ? 'SELFTEST OK' : 'SELFTEST FAILED: library did not render');
+    // the native rig engine must load (JACK itself may be missing on the build machine)
+    const eng = nativeEngine();
+    console.log('selftest native engine:', eng ? JSON.stringify(eng.status()) : nativeError);
+    if (!eng) ok = false;
+    console.log(ok ? 'SELFTEST OK' : 'SELFTEST FAILED: library did not render or the native engine did not load');
     await server.close();
     app.exit(ok ? 0 : 1);
   }
 }
+
+// ------------------------------------------------------------------ native rig engine (JACK)
+interface NativeEngine {
+  status(): unknown; start(o: object): unknown; stop(): unknown; loadNam(c: Int32Array, w: Float32Array, g: number): unknown;
+  clearNam(): unknown; loadIr(d: Float32Array | null): unknown; setParam(id: number, v: number): unknown; meters(): unknown; measureLatency(): unknown;
+}
+let native: NativeEngine | null | undefined;
+let nativeError = '';
+function nativeEngine(): NativeEngine | null {
+  if (native !== undefined) return native;
+  const path = app.isPackaged ? join(process.resourcesPath, 'native', 'forge_native.node') : join(__dirname, '..', 'native', 'forge_native.node');
+  try {
+    const mod = { exports: {} as NativeEngine };
+    process.dlopen(mod, path);
+    native = mod.exports;
+  } catch (e) {
+    native = null;
+    nativeError = existsSync(path) ? `The native engine could not load: ${(e as Error).message}` : 'The native engine is not part of this build.';
+  }
+  return native;
+}
+const unavailable = () => ({ available: false, running: false, reason: nativeError || 'The native engine is not available.' });
+ipcMain.handle('ff:engine:status', () => nativeEngine()?.status() ?? unavailable());
+ipcMain.handle('ff:engine:start', (_e, o: object) => { const n = nativeEngine(); if (!n) throw new Error(nativeError); return n.start({ name: 'Fretforge', ...(o ?? {}) }); });
+ipcMain.handle('ff:engine:stop', () => nativeEngine()?.stop());
+ipcMain.handle('ff:engine:loadNam', (_e, code: Int32Array, weights: Float32Array, gain: number) => nativeEngine()?.loadNam(code, weights, gain));
+ipcMain.handle('ff:engine:clearNam', () => nativeEngine()?.clearNam());
+ipcMain.handle('ff:engine:loadIr', (_e, data: Float32Array | null) => nativeEngine()?.loadIr(data));
+ipcMain.on('ff:engine:setParam', (_e, id: number, v: number) => { nativeEngine()?.setParam(id, v); });
+ipcMain.handle('ff:engine:meters', () => nativeEngine()?.meters() ?? { input: 0, output: 0, load: 0, xruns: 0 });
+ipcMain.handle('ff:engine:measureLatency', () => nativeEngine()?.measureLatency() ?? { roundTripMs: null, message: nativeError });
 
 ipcMain.handle('ff:chooseFolder', async (_e, current?: string) => {
   const r = await dialog.showOpenDialog(win!, { title: 'Choose your library folder', defaultPath: current && existsSync(current) ? current : undefined, properties: ['openDirectory', 'createDirectory'] });
@@ -150,7 +185,7 @@ ipcMain.handle('ff:showItemInFolder', (_e, path: string) => shell.showItemInFold
 
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
 app.on('window-all-closed', () => app.quit());
-app.on('before-quit', () => { saveBounds(); server?.store.flush(); });
+app.on('before-quit', () => { saveBounds(); server?.store.flush(); try { native?.stop(); } catch { /* ignore */ } });
 
 Menu.setApplicationMenu(Menu.buildFromTemplate([
   { label: 'Fretforge', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'togglefullscreen' }, { type: 'separator' }, { role: 'quit' }] },

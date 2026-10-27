@@ -145,7 +145,8 @@ function BrowserRig({ amp, secondary }: { amp: AmpSettings; secondary: boolean }
         n.port.onmessage = (e) => {
           const m = e.data;
           if (m.type === 'ready') resolve();
-          else if (m.type === 'meter') setMeter(m);
+          // peak hold with a short fall-off, like a hardware meter
+          else if (m.type === 'meter') setMeter((p) => ({ input: Math.max(m.input, p.input * 0.85), output: Math.max(m.output, p.output * 0.85), load: m.load }));
           else if (m.type === 'error') toast(m.message);
         };
         engineWasm().then((w) => n.port.postMessage({ type: 'init', wasm: w.slice(0) }));
@@ -222,7 +223,10 @@ function NativeRig({ amp }: { amp: AmpSettings }) {
       const s = await eng.status().catch(() => null);
       if (!alive) return;
       setSt(s);
-      if (s?.running) setMeter(await eng.meters().catch(() => ({ input: 0, output: 0, load: 0, xruns: 0 })));
+      if (s?.running) {
+        const m = await eng.meters().catch(() => ({ input: 0, output: 0, load: 0, xruns: 0 }));
+        setMeter((p) => ({ ...m, input: Math.max(m.input, p.input * 0.8), output: Math.max(m.output, p.output * 0.8) }));
+      }
     };
     poll();
     const t = setInterval(poll, 150);

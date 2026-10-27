@@ -38,10 +38,10 @@ let page;
 try {
   // desktop mode uses a token; the server reads it from the env in the desktop shell, so emulate with server mode + setup here
   server = await start('server', PORT);
-  browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required'] });
+  browser = await chromium.launch({ args: ['--autoplay-policy=no-user-gesture-required', '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'] });
   const ctx = await browser.newContext({ viewport: { width: 1360, height: 860 }, colorScheme: 'dark' });
   page = await ctx.newPage();
-  page.on('pageerror', (e) => errors.push(e.message));
+  page.on('pageerror', (e) => errors.push(e.message + (process.env.SMOKE_VERBOSE ? '\n' + e.stack : '')));
   page.on('console', (m) => { if (m.type() === 'error' || process.env.SMOKE_VERBOSE) errors.push(`[${m.type()}] ${m.text()}`); });
   const base = `http://127.0.0.1:${PORT}`;
 
@@ -137,10 +137,51 @@ try {
   check('mix mode plays and the cursor follows the engine', t0 !== t1, `${t0} → ${t1}`);
   const peak = await page.evaluate(() => window.__ffPeak ?? 0);
   check('the mix engine outputs sound', peak > 0.01, `peak ${peak.toFixed(3)}`);
+  // speed change goes through the time-stretcher
+  await page.locator('button.play').click();
+  await page.keyboard.press('-');
+  await page.keyboard.press('-');
+  await page.evaluate(() => { window.__ffPeak = 0; });
+  const ts0 = await page.locator('.time').textContent();
+  await page.locator('button.play').click();
+  await page.waitForTimeout(2500);
+  const ts1 = await page.locator('.time').textContent();
+  const speedPeak = await page.evaluate(() => window.__ffPeak ?? 0);
+  check('slowed-down mix mode plays through the stretcher', ts0 !== ts1 && speedPeak > 0.01, `${ts0} → ${ts1}, peak ${speedPeak.toFixed(3)}`);
   await page.locator('button.play').click();
   const ampState = await page.locator('.mixrow .badge').allTextContents();
   check('no amp errors', !ampState.some((x) => x.includes('failed')), ampState.join(','));
   if (shots) await page.screenshot({ path: join(shots, '04c-mixmode.png') });
+
+  // ---- a recording of the song: upload, switch to "Recording", play
+  const shuffleId = new URL(page.url()).hash.split('/')[2].split('?')[0];
+  await page.evaluate(async (id) => {
+    const sr = 48000, n = sr * 6, ch = 2, buf = new ArrayBuffer(44 + n * ch * 2), dv = new DataView(buf);
+    const w = (o, s) => { for (let i = 0; i < 4; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); dv.setUint32(4, 36 + n * ch * 2, true); w(8, 'WAVE'); w(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, ch, true);
+    dv.setUint32(24, sr, true); dv.setUint32(28, sr * ch * 2, true); dv.setUint16(32, ch * 2, true); dv.setUint16(34, 16, true); w(36, 'data'); dv.setUint32(40, n * ch * 2, true);
+    for (let i = 0; i < n; i++) { const v = Math.round(8000 * Math.sin(i * 2 * Math.PI * 220 / sr)); dv.setInt16(44 + i * 4, v, true); dv.setInt16(46 + i * 4, v, true); }
+    const fd = new FormData();
+    fd.append('file', new File([buf], 'Live take.wav'));
+    await fetch(`/api/songs/${id}/audio`, { method: 'POST', body: fd });
+  }, shuffleId);
+  await page.reload();
+  await page.waitForFunction(() => !document.querySelector('.loading-over'), null, { timeout: 30000 });
+  await page.getByRole('tab', { name: /Audio/ }).click();
+  await page.locator('.asset').first().waitFor();
+  await page.getByRole('button', { name: 'Recording', exact: true }).click();
+  await page.getByRole('tab', { name: 'Mixer' }).click();
+  await page.locator('.mixrow', { hasText: 'Live take' }).waitFor({ timeout: 30000 });
+  await page.waitForFunction(() => !document.querySelector('.engstat'), null, { timeout: 60000 });
+  await page.evaluate(() => { window.__ffPeak = 0; });
+  const r0 = await page.locator('.time').textContent();
+  await page.locator('button.play').click();
+  await page.waitForTimeout(2000);
+  const r1 = await page.locator('.time').textContent();
+  const recPeak = await page.evaluate(() => window.__ffPeak ?? 0);
+  check('recording mode plays the recording', r0 !== r1 && recPeak > 0.05, `${r0} → ${r1}, peak ${recPeak.toFixed(3)}`);
+  await page.locator('button.play').click();
+  if (shots) await page.screenshot({ path: join(shots, '04d-recording.png') });
 
   // text tab
   await page.goto(base + '/#/');
@@ -159,6 +200,85 @@ try {
   const sections = await page.locator('.section-h h2').allTextContents();
   check('search shows library and online sections', sections.some((s) => s.includes('Songsterr')) && sections.some((s) => s.includes('Ultimate Guitar')), sections.join(' | '));
   if (shots) await page.screenshot({ path: join(shots, '06-search.png') });
+
+  // ---- tab editor: new tab, type notes, save a revision
+  await page.goto(base + '/#/new');
+  await page.fill('#new-title', 'Smoke Tab');
+  await page.fill('#new-bars', '4');
+  await page.getByRole('button', { name: 'Create and edit' }).click();
+  await page.locator('.editbar').waitFor({ timeout: 30000 });
+  await page.waitForFunction(() => !document.querySelector('.loading-over'), null, { timeout: 30000 });
+  await page.locator('.edit-cursor').waitFor({ timeout: 15000 });
+  check('new tab opens in the editor', true);
+  await page.keyboard.press('r'); // eighth note
+  await page.keyboard.press('5');
+  await page.waitForTimeout(400);
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('ArrowUp');
+  await page.keyboard.press('1');
+  await page.keyboard.press('2');
+  await page.waitForTimeout(500);
+  await page.keyboard.press('h');
+  await page.waitForTimeout(400);
+  const stat = await page.locator('.editstat').textContent();
+  check('typing frets edits the tab', /fret 12/.test(stat ?? ''), stat ?? '');
+  if (shots) await page.screenshot({ path: join(shots, '08-editor.png') });
+  await page.keyboard.press('Control+s');
+  await page.fill('#dialog-text', 'First riff');
+  await page.getByRole('button', { name: 'Save', exact: true }).last().click();
+  await page.getByText(/Saved revision 1/).waitFor({ timeout: 15000 });
+  const songId = new URL(page.url()).hash.split('/')[2].split('?')[0];
+  const revs = await page.evaluate(async (id) => (await (await fetch(`/api/songs/${id}/revisions`)).json()), songId);
+  check('saving makes a revision', revs.revisions?.length === 2 && revs.current === 1, JSON.stringify(revs.revisions?.map((r) => r.rev)));
+  const reread = await page.evaluate(async (id) => (await fetch(`/api/songs/${id}/file`)).arrayBuffer().then((b) => b.byteLength), songId);
+  check('the saved file is served', reread > 1000, `${reread} bytes`);
+  await page.getByRole('button', { name: /Done/ }).click();
+
+  // ---- comments, playlists, share link, invite
+  await page.getByRole('tab', { name: /Notes/ }).click();
+  await page.fill('#comment-text', 'Nice riff @Alex');
+  await page.getByRole('button', { name: 'Post' }).click();
+  await page.locator('.comment').first().waitFor();
+  check('comments can be posted', (await page.locator('.comment').count()) === 1);
+  const pl = await page.evaluate(async (id) => (await (await fetch('/api/playlists', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Gig', songIds: [id] }) })).json()), songId);
+  await page.goto(base + `/#/playlist/${pl.id}`);
+  await page.locator('.song', { hasText: 'Smoke Tab' }).waitFor();
+  check('playlists list their songs', true);
+  const share = await page.evaluate(async (id) => (await (await fetch(`/api/songs/${id}/share`, { method: 'POST' })).json()), songId);
+  const guest = await browser.newContext({ viewport: { width: 1100, height: 800 } });
+  const gp = await guest.newPage();
+  await gp.goto(`${base}/#/s/${share.token}`);
+  await gp.waitForSelector('.at-surface svg, .at-surface div svg', { timeout: 30000 });
+  check('share links open without an account', (await gp.locator('h1').textContent()) === 'Smoke Tab');
+  const inv = await page.evaluate(async () => (await (await fetch('/api/invites', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ role: 'viewer' }) })).json()));
+  await gp.goto(`${base}/#/invite/${inv.token}`);
+  await gp.fill('#inv-name', 'Sam');
+  await gp.fill('#inv-pw', 'another long password');
+  await gp.getByRole('button', { name: 'Create my account' }).click();
+  await gp.locator('.song').first().waitFor({ timeout: 20000 });
+  const samSees = await gp.locator('.song .t').allTextContents();
+  check('an invite creates an account that sees the shared library', samSees.includes('Smoke Tab'), samSees.slice(0, 4).join(', '));
+  check('viewers get no import or new-tab buttons', (await gp.getByRole('button', { name: 'Import files' }).count()) === 0);
+  await guest.close();
+
+  // ---- rig page
+  await page.goto(base + '/#/rig');
+  await page.getByRole('heading', { name: 'Models and IRs' }).waitFor();
+  await page.locator('.rigfile').first().waitFor({ timeout: 15000 });
+  check('rig page lists the library', (await page.locator('.rigfile').count()) === 2);
+  await page.getByRole('button', { name: /Preview with a riff/ }).click();
+  await page.waitForFunction(() => !document.querySelector('button .spinner'), null, { timeout: 60000 });
+  check('amp preview renders the riff', true);
+  await ctx.grantPermissions(['microphone']);
+  await page.locator('#amp-nam').selectOption({ index: 1 });
+  await page.getByRole('button', { name: /^Start$/ }).click();
+  await page.locator('.meter').first().waitFor({ timeout: 20000 });
+  // the fake microphone beeps once a second: watch the meter for a moment
+  let meterW = 0;
+  for (let i = 0; i < 30 && meterW <= 1; i++) { await page.waitForTimeout(100); meterW = await page.locator('.meter i').first().evaluate((el) => parseFloat(el.style.width)); }
+  check('the live browser rig runs on the input', meterW > 1, `input meter ${meterW}%`);
+  await page.getByRole('button', { name: /^Stop$/ }).click();
+  if (shots) await page.screenshot({ path: join(shots, '09-rig.png') });
 
   // mobile layout
   await page.setViewportSize({ width: 390, height: 844 });

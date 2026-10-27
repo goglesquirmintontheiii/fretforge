@@ -25,6 +25,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Build the audio engine (WASM + native addon)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld wasi-libc libc++-18-dev-wasm32 libclang-rt-18-dev-wasm32
+          bash packages/engine/build.sh all
       - run: npm run typecheck
       - run: npm test
       - run: npm run build

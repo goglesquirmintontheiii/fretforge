@@ -4,7 +4,7 @@ import type { AmpSettings, AudioAsset, Instrument, PlaySource, PracticeState, So
 import { INSTRUMENT_LABELS, capoShapeName, chordFromPitches, chordShapes, formatTime, gainToDb, tuningName } from '@fretforge/shared';
 import { api } from '../api';
 import { go, useApp } from '../lib/app';
-import '../lib/alphaTabFixes';
+import { patchSynthOutput } from '../lib/alphaTabFixes';
 import { transposeScore } from '../lib/transpose';
 import { useWakeLock } from '../lib/wakeLock';
 import { Icon, InstrumentIcon } from '../components/icons';
@@ -196,7 +196,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
   const [markBoxes, setMarkBoxes] = useState<{ x: number; y: number; w: number; h: number }[]>([]);
   const [revs, setRevs] = useState(false);
   const editor = useEditor({
-    apiRef, scoreRef, song, focus, setFocus, visible, setVisible, onToast,
+    apiRef, scoreRef, score, song, focus, setFocus, visible, setVisible, onToast,
     onSaved: (s2) => { onSongChange?.(s2); },
     rebuild: () => build(),
     initial: edit && !readOnly,
@@ -259,7 +259,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
       }
     });
     a.soundFontLoad.on((e) => setSfProgress(e.total ? e.loaded / e.total : 0));
-    a.playerReady.on(() => { setReady(true); applyAudio(); });
+    a.playerReady.on(() => { setReady(true); applyAudio(); patchSynthOutput(a.player?.output); });
     a.midiLoaded.on(() => {
       applyAudio();
       // renders are cached by this key: same song, revision, transposition and edit state = same audio

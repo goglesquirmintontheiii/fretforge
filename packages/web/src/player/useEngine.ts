@@ -8,6 +8,7 @@ import { ENGINE_RATE, ampActive, ampKey, audioContext, processAmp, toInt16 } fro
 import { MixEngine } from '../audio/mixEngine';
 import { SyncMap, Timeline, isSilent, renderTrack } from '../audio/tabAudio';
 import { api as server } from '../api';
+import { patchSynthOutput } from '../lib/alphaTabFixes';
 
 type Mix = Record<number, { volume: number; mute: boolean; solo: boolean }>;
 type AudioMix = Record<string, { volume: number; mute: boolean; solo: boolean; pan?: number }>;
@@ -114,6 +115,7 @@ export function useEngine(inp: EngineInputs): EngineState {
     const wasPlaying = a.playerState === alphaTab.synth.PlayerState.Playing;
     const tick = a.tickPosition;
     if (wasPlaying) a.pause();
+    patchSynthOutput(a.player?.output);
     a.settings.player.playerMode = mode;
     a.updateSettings();
     a.loadMidiForScore();

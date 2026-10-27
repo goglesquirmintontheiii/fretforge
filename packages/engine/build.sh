@@ -18,3 +18,13 @@ if [[ "${1:-}" != "native" ]]; then
 fi
 $CXX -std=c++20 -O3 -fno-exceptions -fPIC -DNDEBUG $INC -o build/forge-test test/forge-test.cpp $SRC -lm
 echo "wrote build/forge-test"
+
+# Native addon for the desktop app (JACK via dlopen, N-API so it works with any Electron).
+if [[ "${1:-}" == "native" || "${1:-}" == "all" ]]; then
+  NAPI_INC=$(node -p "require('node-api-headers').include_dir" 2>/dev/null || echo ../../node_modules/node-api-headers/include)
+  OUT_NATIVE=../desktop/native/forge_native.node
+  mkdir -p "$(dirname "$OUT_NATIVE")"
+  $CXX -std=c++20 -O3 -fPIC -shared -fvisibility=hidden -fno-exceptions -DNDEBUG -DNODE_GYP_MODULE_NAME=forge_native \
+    -I"$NAPI_INC" $INC -o "$OUT_NATIVE" native/addon.cpp src/nam.cpp src/convolver.cpp src/rig.cpp -ldl -lpthread
+  echo "wrote $OUT_NATIVE ($(stat -c %s "$OUT_NATIVE") bytes)"
+fi

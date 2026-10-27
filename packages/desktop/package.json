@@ -13,7 +13,8 @@
   },
   "devDependencies": {
     "electron": "44.9.3",
-    "electron-builder": "26.18.0"
+    "electron-builder": "26.18.0",
+    "node-api-headers": "^1.9.0"
   },
   "homepage": "https://github.com/goglesquirmintontheiii/fretforge",
   "license": "MIT"

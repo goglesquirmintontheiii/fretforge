@@ -37,7 +37,8 @@ h1, h2, h3 { font-family: var(--display); font-stretch: 92%; letter-spacing: -.0
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap }
 
 /* ---------- shell */
-.shell { display: grid; grid-template-rows: auto 1fr; height: 100% }
+.shell { display: flex; flex-direction: column; height: 100% }
+.shell > .main { flex: 1 }
 .topbar { display: flex; align-items: center; gap: 12px; padding: 8px max(14px, env(safe-area-inset-left)) 8px max(14px, env(safe-area-inset-right));
   background: var(--panel); border-bottom: 1px solid var(--line); min-width: 0 }
 .brand { display: flex; align-items: center; gap: 9px; text-decoration: none; color: var(--fg); flex: none }

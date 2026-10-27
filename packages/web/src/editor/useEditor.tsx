@@ -33,6 +33,8 @@ export interface EditorApi {
 export function useEditor(o: {
   apiRef: React.RefObject<alphaTab.AlphaTabApi | null>;
   scoreRef: React.RefObject<alphaTab.model.Score | null>;
+  /** the loaded score (state), so effects can wait for alphaTab */
+  score: alphaTab.model.Score | null;
   song: SongRecord;
   focus: number;
   setFocus: (t: number) => void;
@@ -103,7 +105,8 @@ export function useEditor(o: {
       if (!bb) { setBox(null); return; }
       const nb = bb.notes?.find((n) => n.note.string === c.string);
       const v = bb.visualBounds;
-      setBox({ x: v.x - 3, y: bb.barBounds.realBounds.y, w: Math.max(18, v.w + 6), h: bb.barBounds.realBounds.h, ny: nb ? nb.noteHeadBounds.y + nb.noteHeadBounds.h / 2 : undefined });
+      const mbb = bb.barBounds.masterBarBounds.realBounds;
+      setBox({ x: v.x - 3, y: mbb.y, w: Math.max(18, v.w + 6), h: mbb.h, ny: nb ? nb.noteHeadBounds.y + nb.noteHeadBounds.h / 2 : undefined });
       if (hearNext.current && beat) { hearNext.current = false; try { a.playBeat(beat); } catch { /* player not ready */ } }
     };
     const off1 = a.postRenderFinished.on(place);
@@ -114,7 +117,7 @@ export function useEditor(o: {
     const off3 = a.noteMouseDown.on((note) => setCursor((c) => ({ ...c, string: note.string })));
     place();
     return () => { off1(); off2(); off3(); };
-  }, [editing, apiRef, scoreRef]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [editing, !!o.score]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!editing) return;
@@ -124,7 +127,8 @@ export function useEditor(o: {
     const bb = beat && a ? a.boundsLookup?.findBeat(beat) : null;
     if (bb) {
       const nb = bb.notes?.find((n) => n.note.string === cursor.string);
-      setBox({ x: bb.visualBounds.x - 3, y: bb.barBounds.realBounds.y, w: Math.max(18, bb.visualBounds.w + 6), h: bb.barBounds.realBounds.h, ny: nb ? nb.noteHeadBounds.y + nb.noteHeadBounds.h / 2 : undefined });
+      const mbb = bb.barBounds.masterBarBounds.realBounds;
+      setBox({ x: bb.visualBounds.x - 3, y: mbb.y, w: Math.max(18, bb.visualBounds.w + 6), h: mbb.h, ny: nb ? nb.noteHeadBounds.y + nb.noteHeadBounds.h / 2 : undefined });
       // keep the cursor on screen
       const el = document.querySelector('.edit-cursor');
       (el as HTMLElement | null)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
