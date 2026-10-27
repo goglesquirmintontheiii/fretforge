@@ -12,6 +12,12 @@ let origin = '';
 if (!app.requestSingleInstanceLock() && !SELFTEST) {
   app.quit();
 }
+if (SELFTEST) {
+  // CI runs this under a virtual display without a GPU
+  app.disableHardwareAcceleration();
+  process.on('unhandledRejection', (e) => { console.error('SELFTEST FAILED:', e); app.exit(1); });
+  setTimeout(() => { console.error('SELFTEST FAILED: timed out'); app.exit(1); }, 90_000).unref();
+}
 app.setName('Fretforge');
 
 // ------------------------------------------------------------------ online fetching
@@ -123,8 +129,12 @@ async function start() {
       await new Promise((r) => setTimeout(r, 500));
       ok = await win.webContents.executeJavaScript('document.querySelectorAll(".song").length > 0').catch(() => false);
     }
-    const img = await win.webContents.capturePage();
-    writeFileSync(SELFTEST, img.toPNG());
+    try {
+      const img = await win.webContents.capturePage();
+      writeFileSync(SELFTEST, img.toPNG());
+    } catch (e) {
+      console.log('selftest screenshot skipped:', String(e));
+    }
     console.log(ok ? 'SELFTEST OK' : 'SELFTEST FAILED: library did not render');
     await server.close();
     app.exit(ok ? 0 : 1);

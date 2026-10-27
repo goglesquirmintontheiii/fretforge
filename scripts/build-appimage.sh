@@ -52,7 +52,13 @@ HERE="$(dirname "$(readlink -f "$0")")"
 FLAGS=""
 # Chromium's sandbox needs unprivileged user namespaces inside an AppImage. They're on by default
 # on Fedora/Nobara; if they're blocked (or we're root), run without it rather than refuse to start.
-if [ "$(id -u)" = "0" ] || ! unshare --user --map-root-user true >/dev/null 2>&1; then
+# Some distros restrict them (Ubuntu 24.04's AppArmor setting, Debian's userns_clone=0).
+no_userns() {
+  [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = "1" ] && return 0
+  [ "$(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null)" = "0" ] && return 0
+  ! unshare --user --map-root-user --pid --fork true >/dev/null 2>&1
+}
+if [ "$(id -u)" = "0" ] || no_userns; then
   FLAGS="--no-sandbox"
 fi
 # Native Wayland on KDE/GNOME Wayland sessions; set FRETFORGE_X11=1 to force XWayland.
