@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import { defaultPrefs, type Prefs, type PublicUser } from '@fretforge/shared';
 import { api } from '../api';
 import { DialogHost } from './dialog';
+import { setRigLite } from '../audio/engine';
 
 // ---------------------------------------------------------------- routing (hash based, works from file:// and any host)
 export type Route =
@@ -77,6 +78,7 @@ export function AppProvider({ children, mode, version, user }: { children: React
   const [msg, setMsg] = useState<string | null>(null);
 
   useEffect(() => { api.prefs().then(setLocal).catch(() => {}); }, []);
+  useEffect(() => { setRigLite(prefs.rigQuality === 'eco'); }, [prefs.rigQuality]);
   useEffect(() => {
     const apply = () => { document.documentElement.dataset.theme = resolvedTheme(prefs.theme); };
     apply();

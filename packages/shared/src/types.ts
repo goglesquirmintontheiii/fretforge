@@ -177,8 +177,8 @@ export interface Prefs {
   /** offline cache budget in MB (PWA) */
   offlineMb: number;
   ai: AiSettings;
-  /** rig quality: eco uses the lightest model variant where the file offers one */
-  rigQuality: 'eco' | 'standard' | 'high';
+  /** rig quality: eco uses the lightest variant of models that include several */
+  rigQuality: 'eco' | 'standard';
 }
 
 /** Settings that belong to the person, not the server. */

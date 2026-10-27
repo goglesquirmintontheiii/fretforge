@@ -5,7 +5,7 @@ import { useApp } from '../lib/app';
 import { askConfirm } from '../lib/dialog';
 import { AmpEditor, AmpPresets, describeRigFile, refreshRigFiles, useRigFiles, useUpload } from '../components/AmpEditor';
 import { Icon } from '../components/icons';
-import { ENGINE_RATE, audioContext, engineWasm, processAmp, rigFileBytes, rigFileText } from '../audio/engine';
+import { ENGINE_RATE, audioContext, engineWasm, processAmp, rigFileBytes, rigFileText, rigLite } from '../audio/engine';
 import { RigParam } from '../audio/forgeDsp';
 import { diRiff } from './diRiff';
 import { JobRow, useJobs } from '../player/AudioPanel';
@@ -26,7 +26,7 @@ function paramsOf(a: AmpSettings): [RigParam, number][] {
 
 /** Loads the model and IR for an amp: what both live engines need. */
 async function loadRigAssets(a: AmpSettings) {
-  const nam = a.namId ? compileNam(await rigFileText(a.namId)) : null;
+  const nam = a.namId ? compileNam(await rigFileText(a.namId), { lite: rigLite }) : null;
   const ir = a.irId ? prepareIr(decodeWav(new Uint8Array(await rigFileBytes(a.irId))), ENGINE_RATE) : null;
   return { nam, ir };
 }
@@ -171,7 +171,7 @@ function BrowserRig({ amp, secondary }: { amp: AmpSettings; secondary: boolean }
     const n = node.current;
     if (!on || !n) return;
     for (const [id, v] of paramsOf(amp)) n.port.postMessage({ type: 'param', id, value: v });
-    const key = `${amp.namId}|${amp.irId}`;
+    const key = `${amp.namId}|${amp.irId}|${rigLite}`;
     if (key === loadedKey.current) return;
     loadedKey.current = key;
     loadRigAssets(amp).then(({ nam, ir }) => {

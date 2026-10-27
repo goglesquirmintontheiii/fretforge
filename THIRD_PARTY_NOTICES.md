@@ -11,6 +11,11 @@ Fretforge's own code is under the MIT License (see LICENSE). It includes or bund
 | [Archivo](https://github.com/Omnibus-Type/Archivo), [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) | SIL OFL 1.1 | UI fonts (via Fontsource) |
 | React, Fastify, MiniSearch, chokidar, @tonejs/midi | MIT | Libraries |
 | Electron / Chromium | MIT / BSD and others (see `LICENSES.chromium.html` in the app) | Desktop shell |
+| [Signalsmith Stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch) and [Signalsmith Linear](https://github.com/Signalsmith-Audio/linear) | MIT | Time-stretch, pitch-shift and FFT in the audio engine (`packages/engine/vendor`) |
+| [NeuralAmpModelerCore](https://github.com/sdatkinson/NeuralAmpModelerCore) | MIT | Example models used as test fixtures (`packages/engine/test/fixtures`); forge-dsp's NAM runtime is written to match its behaviour |
+| [node-api-headers](https://github.com/nodejs/node-api-headers) | MIT | Build-time headers for the native addon |
+| wasi-libc, LLVM libc++ | MIT-style / Apache-2.0 with LLVM exception | Linked into the WASM engine |
+| Python AI worker dependencies (not bundled; installed on request): PyTorch (BSD), Demucs (MIT), librosa (ISC), soundfile (BSD), yt-dlp (Unlicense), neural-amp-modeler (MIT) | | `ai/fretforge_ai.py` |
 
 ## songsterr-downloader license
 

@@ -37,6 +37,13 @@ describe('NAM models match NeuralAmpModelerCore', () => {
     });
   }
 
+  it('picks the lightest variant of slimmable containers in eco mode', () => {
+    const text = readFileSync(fx('slimmable_container.nam'), 'utf8');
+    const full = compileNam(text), lite = compileNam(text, { lite: true });
+    expect(lite.info.macsPerSample).toBeLessThan(full.info.macsPerSample);
+    expect(() => dsp.createNam(lite).destroy()).not.toThrow();
+  });
+
   it('reports useful info and errors', () => {
     const c = compileNam(readFileSync(fx('lstm.nam'), 'utf8'));
     expect(c.info.runArchitecture).toBe('LSTM');

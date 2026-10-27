@@ -10,6 +10,8 @@ export interface AmpJob {
   /** cache keys so the model and IR are parsed once per worker */
   namKey: string | null;
   namText?: string;
+  /** smallest variant of slimmable models */
+  lite?: boolean;
   irKey: string | null;
   irBytes?: ArrayBuffer;
   input: Float32Array;
@@ -40,7 +42,7 @@ self.onmessage = async (e: MessageEvent<AmpJob | { type: 'describe'; id: number;
     }
     const dsp = await dspP;
     const a = job.amp;
-    const compiled = a.namId && job.namKey ? getNam(job.namKey, job.namText) : null;
+    const compiled = a.namId && job.namKey ? getNam(job.namKey, job.namText, job.lite) : null;
     const irData = a.irId && job.irKey ? getIr(job.irKey, job.irBytes, job.sampleRate) : null;
     const block = 2048;
     const rig = dsp.createRig(job.sampleRate, block);
@@ -82,10 +84,10 @@ self.onmessage = async (e: MessageEvent<AmpJob | { type: 'describe'; id: number;
   }
 };
 
-function getNam(key: string, text?: string): CompiledNam {
+function getNam(key: string, text?: string, lite = false): CompiledNam {
   if (namCache?.key === key) return namCache.compiled;
   if (!text) throw new Error('model text missing');
-  namCache = { key, compiled: compileNam(text) };
+  namCache = { key, compiled: compileNam(text, { lite }) };
   return namCache.compiled;
 }
 

@@ -510,6 +510,8 @@ function compileConvNet(B: Builder, cfg: Json, weights: ArrayLike<number>, input
   return { out, prewarm, outChannels: outCh };
 }
 
+let preferLite = false;
+
 function compileModel(B: Builder, model: Json, input: View, sampleRate: number): Compiled {
   const arch = model.architecture;
   const cfg = model.config ?? {};
@@ -527,7 +529,7 @@ function compileModel(B: Builder, model: Json, input: View, sampleRate: number):
     case 'Container': {
       const subs: Json[] = cfg.submodels ?? [];
       if (!subs.length) throw new NamError('The container model has no submodels.');
-      return compileModel(B, subs[subs.length - 1].model, input, sampleRate);
+      return compileModel(B, subs[preferLite ? 0 : subs.length - 1].model, input, sampleRate);
     }
     default:
       throw new NamError(`Unsupported NAM architecture "${arch}".`);
@@ -536,12 +538,16 @@ function compileModel(B: Builder, model: Json, input: View, sampleRate: number):
 
 function innermost(model: Json): Json {
   if ((model.architecture === 'SlimmableContainer' || model.architecture === 'Container') && model.config?.submodels?.length)
-    return innermost(model.config.submodels[model.config.submodels.length - 1].model);
+    return innermost(model.config.submodels[preferLite ? 0 : model.config.submodels.length - 1].model);
   return model;
 }
 
-/** Reads a .nam file (as text or parsed JSON) and compiles it. Throws NamError with a readable message. */
-export function compileNam(file: string | Json): CompiledNam {
+/**
+ * Reads a .nam file (as text or parsed JSON) and compiles it. Throws NamError with a readable message.
+ * `lite` picks the smallest variant of models that ship several (slimmable containers).
+ */
+export function compileNam(file: string | Json, opts: { lite?: boolean } = {}): CompiledNam {
+  preferLite = !!opts.lite;
   let model: Json;
   try {
     model = typeof file === 'string' ? JSON.parse(file) : file;

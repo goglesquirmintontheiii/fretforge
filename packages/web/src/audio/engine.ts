@@ -7,6 +7,10 @@ import type { AmpJob, AmpReply } from './ampWorker';
 
 export const ENGINE_RATE = 48000;
 
+/** "Eco" rig quality: use the smallest variant of models that ship several. */
+export let rigLite = false;
+export function setRigLite(v: boolean) { rigLite = v; }
+
 let wasmBytes: Promise<ArrayBuffer> | null = null;
 export function engineWasm(): Promise<ArrayBuffer> {
   wasmBytes ??= fetch('/engine/forge-dsp.wasm').then((r) => {
@@ -118,7 +122,7 @@ export function ampActive(a: AmpSettings | undefined): a is AmpSettings {
 }
 
 export function ampKey(a: AmpSettings): string {
-  return JSON.stringify([a.namId, a.irId, a.inputDb, a.outputDb, a.gate, a.gateDb, a.bassDb, a.midDb, a.trebleDb, a.lowCutHz, a.highCutHz, a.irMix]);
+  return JSON.stringify([rigLite, a.namId, a.irId, a.inputDb, a.outputDb, a.gate, a.gateDb, a.bassDb, a.midDb, a.trebleDb, a.lowCutHz, a.highCutHz, a.irMix]);
 }
 
 /**
@@ -147,7 +151,7 @@ export async function processAmp(dry: Float32Array, amp: AmpSettings, sampleRate
     const input = new Float32Array(end - from);
     for (let i = 0; i < input.length; i++) input[i] = dry[from + i] * norm;
     const r = await p.run({
-      sampleRate, amp: { ...amp, outputDb: 0 }, namKey: amp.namId ?? null, namText, irKey: amp.irId ?? null, irBytes: irBytes ? irBytes.slice(0) : undefined,
+      sampleRate, amp: { ...amp, outputDb: 0 }, namKey: amp.namId ? `${amp.namId}${rigLite ? ':lite' : ''}` : null, namText, lite: rigLite, irKey: amp.irId ?? null, irBytes: irBytes ? irBytes.slice(0) : undefined,
       input, pre: start - from,
     }, wasm, [input.buffer]);
     if (signal?.aborted) return;

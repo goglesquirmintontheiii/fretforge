@@ -113,7 +113,8 @@ input[type=range] { accent-color: var(--accent) }
 .dropzone { border: 2px dashed var(--accent); background: var(--accent-soft); color: var(--accent); border-radius: var(--radius); padding: 26px; text-align: center; font-weight: 700 }
 
 /* ---------- player */
-.player { display: grid; grid-template-rows: auto 1fr auto; height: 100%; min-height: 0 }
+.player { display: grid; grid-template-rows: auto 1fr auto; grid-template-columns: minmax(0, 1fr); height: 100%; min-height: 0 }
+.player > * { min-width: 0 }
 .player-head { display: flex; align-items: center; gap: 12px; padding: 10px max(14px, env(safe-area-inset-left)); background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap }
 .player-head h1 { font-size: 19px; line-height: 1.15 }
 .player-head .who { color: var(--dim); font-size: 13px }
@@ -331,3 +332,6 @@ textarea { padding: 8px 10px; background: var(--sunk); border: 1px solid var(--l
 }
 a.btn { text-decoration: none; color: inherit }
 a.btn.primary { color: var(--on-accent) }
+.player-head > .grow { flex: 1 1 200px }
+.player-head h1, .player-head .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+@media (max-width: 720px) { .player-head { gap: 8px; padding-top: 8px; padding-bottom: 8px } .player-head select { max-width: 62vw } }

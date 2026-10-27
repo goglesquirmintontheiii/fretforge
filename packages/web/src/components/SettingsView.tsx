@@ -64,7 +64,7 @@ export function SettingsView() {
           </label>
           <label className="field"><span>Rig quality</span>
             <select id="set-rigq" value={prefs.rigQuality} onChange={(e) => setPrefs({ rigQuality: e.target.value as never })}>
-              <option value="eco">Eco (lighter model variants)</option><option value="standard">Standard</option><option value="high">High</option>
+              <option value="standard">Standard</option><option value="eco">Eco: lighter variant of models that include one</option>
             </select>
           </label>
         </div>

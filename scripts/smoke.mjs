@@ -282,11 +282,15 @@ try {
 
   // mobile layout
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(base + '/#/');
-  await page.locator('.song').first().waitFor();
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
-  check('no horizontal scroll at phone width', !overflow);
-  if (shots) await page.screenshot({ path: join(shots, '07-mobile.png') });
+  const wide = [];
+  for (const [hash, sel, name] of [['/#/', '.song', 'library'], ['/#/rig', '.rigfile', 'rig'], ['/#/settings', '.setcard', 'settings'], [`/#/song/${shuffleId}`, '.at-surface', 'player']]) {
+    await page.goto(base + hash);
+    await page.locator(sel).first().waitFor({ timeout: 30000 });
+    await page.waitForTimeout(500);
+    if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1 || document.body.scrollWidth > window.innerWidth + 1)) wide.push(name);
+    if (shots) await page.screenshot({ path: join(shots, `07-mobile-${name}.png`) });
+  }
+  check('no horizontal scroll at phone width', wide.length === 0, wide.join(', '));
 
   const bad = errors.filter((e) => !/Failed to load resource|favicon|ERR_|net::/.test(e));
   check('no page errors', bad.length === 0, bad.slice(0, 3).join(' | '));
