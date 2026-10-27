@@ -1,6 +1,6 @@
 // Thin wrapper around the forge-dsp WASM build (packages/engine). Works in windows, workers,
 // AudioWorklets and Node: it only needs the WebAssembly global.
-import type { CompiledNam } from './nam';
+import type { CompiledNam } from '@fretforge/shared';
 
 interface Exports {
   memory: WebAssembly.Memory;

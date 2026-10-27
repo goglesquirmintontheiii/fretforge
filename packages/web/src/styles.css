@@ -143,7 +143,7 @@ input[type=range] { accent-color: var(--accent) }
 .tbtn:hover { color: var(--fg); border-color: var(--faint) }
 .tbtn.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent) }
 .time { font-family: var(--mono); font-size: 13px; color: var(--dim); min-width: 92px; text-align: center; font-variant-numeric: tabular-nums }
-.seek { flex: 1 1 160px; min-width: 120px }
+.seek { flex: 1 1 120px; min-width: 90px }
 .speed { display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; height: 38px; border: 1px solid var(--line); border-radius: 9px; background: var(--raise) }
 .speed input { width: 90px }
 .speed b { font-family: var(--mono); font-size: 13px; min-width: 42px; text-align: right }
@@ -222,3 +222,111 @@ input[type=range] { accent-color: var(--accent) }
   .ms, .vis { min-width: 40px }
   .play { width: 52px; height: 52px }
 }
+
+/* ---------- 0.4: settings cards, collections */
+.setcard { padding: 18px; display: grid; gap: 14px }
+.libnav { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; border-bottom: 1px solid var(--line); padding-bottom: 10px }
+.libnav a, .libnav-add { display: inline-flex; align-items: center; gap: 6px; padding: 6px 11px; border-radius: 8px; color: var(--dim); text-decoration: none; font-weight: 600; font-size: 13.5px; border: 1px solid transparent; background: none }
+.libnav a:hover, .libnav-add:hover { background: var(--sunk); color: var(--fg) }
+.libnav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); border-color: transparent }
+.libnav-add { border-style: dashed; border-color: var(--line) }
+.songwrap { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; border-top: 1px solid var(--line-2) }
+.songwrap:first-child { border-top: 0 }
+.songwrap > .song { border-top: 0 }
+.songtools { display: flex; gap: 2px; padding-right: 8px; align-items: center }
+.songtools .iconbtn { padding: 6px 8px; font-size: 13px }
+.songtools .iconbtn:disabled { opacity: .3 }
+.popover.menu { min-width: 230px; gap: 2px; padding: 8px }
+.popover.menu .btn.ghost { justify-content: flex-start; width: 100% }
+.dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-left: 5px; vertical-align: middle }
+.iconbtn .dot { position: relative; top: -6px; left: -6px; margin: 0 }
+.mention { display: block; text-decoration: none; color: var(--fg); padding: 6px 8px; border-radius: 8px; font-size: 13px }
+.mention:hover { background: var(--sunk) }
+.peoplelist { display: grid; gap: 8px }
+.modal.wide { width: min(720px, 100%) }
+
+/* ---------- amp, knobs and rig */
+.amp { display: grid; gap: 14px }
+.amp-files { display: grid; grid-template-columns: 1fr 1fr; gap: 12px }
+@media (max-width: 560px) { .amp-files { grid-template-columns: 1fr } }
+.faceplate { background: linear-gradient(180deg, #2b2f38, #1d2028 60%, #181a21); border: 1px solid #000; border-radius: 12px; padding: 14px 10px 10px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08), 0 4px 18px rgba(0, 0, 0, .25); color: #e6e2d8; display: grid; gap: 10px; position: relative; overflow: hidden }
+.faceplate::before { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, rgba(255, 255, 255, .025) 0 1px, transparent 1px 3px); pointer-events: none }
+.knobs { display: flex; flex-wrap: wrap; justify-content: space-around; gap: 6px 4px; position: relative }
+.knob { display: grid; justify-items: center; gap: 2px; min-width: 64px; user-select: none }
+.knob [role="slider"] { cursor: ns-resize; border-radius: 50%; outline-offset: 3px }
+.knob svg { display: block }
+.knob .track { fill: none; stroke: rgba(255, 255, 255, .14); stroke-width: 3.5; stroke-linecap: round }
+.knob .fill { fill: none; stroke: #f2a33a; stroke-width: 3.5; stroke-linecap: round; filter: drop-shadow(0 0 3px rgba(242, 163, 58, .55)) }
+.knob .cap { fill: #0d0e12; stroke: #4a4f5c; stroke-width: 1.5 }
+.knob .needle { stroke: #f4efe3; stroke-width: 2.5; stroke-linecap: round }
+.knob .kl { font-family: var(--display); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #b9b4a8 }
+.knob .kv { font-family: var(--mono); font-size: 11px; color: #f2a33a }
+.knob.off { opacity: .4 }
+.gatebox { display: flex; align-items: center; gap: 6px }
+.pedalsw { display: grid; justify-items: center; gap: 4px; border: 1px solid #000; background: linear-gradient(#3a3f4a, #262a33); color: #d6d1c5; border-radius: 9px; padding: 7px 10px;
+  font-family: var(--display); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase }
+.pedalsw i { width: 9px; height: 9px; border-radius: 50%; background: #4a2a10; box-shadow: inset 0 1px 1px rgba(0, 0, 0, .6) }
+.pedalsw.on i { background: #ff9d2e; box-shadow: 0 0 8px #ff9d2e }
+.ampbtn { height: 26px; padding: 0 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--raise); color: var(--faint); font-family: var(--display); font-weight: 800; font-size: 10.5px; letter-spacing: .06em }
+.ampbtn.on { background: #1d2028; color: #f2a33a; border-color: #f2a33a; box-shadow: 0 0 0 1px rgba(242, 163, 58, .2) }
+.engstat { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--dim); background: var(--sunk); border-radius: 8px; padding: 7px 10px }
+.mixrow input.pan { grid-column: auto; width: 60px }
+.riggrid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 18px; align-items: start }
+@media (max-width: 900px) { .riggrid { grid-template-columns: minmax(0, 1fr) } }
+.meter { display: grid; grid-template-columns: 34px 1fr; gap: 8px; align-items: center; font-size: 12px; color: var(--dim); font-weight: 700 }
+.meter div { height: 10px; background: var(--sunk); border-radius: 5px; overflow: hidden; border: 1px solid var(--line-2) }
+.meter i { display: block; height: 100%; background: var(--good); transition: width .06s linear }
+.meter i.hot { background: var(--accent) }
+.meter i.clip { background: var(--bad) }
+.rigfile { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line-2) }
+.rigfile:first-child { border-top: 0 }
+.rigfile .t { font-weight: 650 }
+.rigfile .a { color: var(--dim); font-size: 13px }
+.rigfile .kind { font-family: var(--display); font-weight: 800; font-size: 11px; letter-spacing: .06em; text-align: center; padding: 6px 0; border-radius: 7px; background: var(--sunk); color: var(--dim) }
+.rigfile .kind.nam { background: #1d2028; color: #f2a33a }
+.rigfile .kind.ir { background: var(--info-soft); color: var(--info) }
+
+/* ---------- audio, jobs */
+.asset { display: grid; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--raise) }
+.asset .nm { font-weight: 650; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.jobrow { display: grid; gap: 5px }
+.bar { height: 6px; background: var(--sunk); border-radius: 3px; overflow: hidden }
+.bar i { display: block; height: 100%; background: var(--accent); transition: width .3s }
+.synctools { display: grid; gap: 10px; border-top: 1px dashed var(--line); padding-top: 10px }
+
+/* ---------- comments, revisions */
+.comments { display: grid; gap: 10px }
+.comment { display: grid; gap: 4px; padding-bottom: 10px; border-bottom: 1px solid var(--line-2) }
+.comment .ctext { white-space: pre-wrap; font-size: 14px }
+.comment .badge { cursor: pointer }
+.mentiontag { color: var(--info) }
+textarea { padding: 8px 10px; background: var(--sunk); border: 1px solid var(--line); border-radius: 8px; resize: vertical; min-height: 64px }
+.revlist { display: grid; gap: 8px }
+.rev { display: grid; gap: 4px; padding: 10px; border: 1px solid var(--line); border-radius: 10px }
+.rev.cur { border-color: var(--good) }
+.diff { font-size: 13px; display: grid; gap: 4px; background: var(--sunk); border-radius: 8px; padding: 8px 10px }
+.hostwrap { position: relative }
+.diffmark { position: absolute; background: rgba(242, 163, 58, .14); outline: 2px solid rgba(242, 163, 58, .7); border-radius: 4px; pointer-events: none; z-index: 3 }
+
+/* ---------- editor */
+.editbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 7px max(12px, env(safe-area-inset-left)); background: var(--raise); border-top: 1px solid var(--line) }
+.durbtn, .techbtn { min-width: 34px; height: 32px; padding: 0 7px; border-radius: 7px; border: 1px solid var(--line); background: var(--panel); font-weight: 750; font-size: 14px; color: var(--dim) }
+.techbtn { font-size: 11.5px; font-family: var(--display); letter-spacing: .03em }
+.durbtn[aria-pressed="true"], .techbtn[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); border-color: var(--accent) }
+.editstat { font-size: 12px }
+.editstat .over { color: var(--bad) }
+.editstat .under { color: var(--accent) }
+.edit-cursor { position: absolute; border: 2px solid var(--info); background: rgba(102, 182, 230, .10); border-radius: 5px; pointer-events: none; z-index: 4; transition: left .05s, top .05s }
+.edit-cursor i { position: absolute; left: -4px; right: -4px; height: 18px; border-radius: 4px; background: rgba(102, 182, 230, .35) }
+@media (pointer: coarse) { .durbtn, .techbtn { min-height: 40px; min-width: 40px } }
+
+/* ---------- printing */
+.print-host { position: fixed; left: -10000px; top: 0; width: 1000px; background: #fff; color: #000 }
+@media print {
+  body.printing > *:not(.print-host) { display: none !important }
+  body.printing .print-host { position: static; left: 0; width: auto }
+  body.printing { background: #fff }
+}
+a.btn { text-decoration: none; color: inherit }
+a.btn.primary { color: var(--on-accent) }

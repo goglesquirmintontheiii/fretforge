@@ -1,8 +1,8 @@
-import { mkdirSync, readFileSync, statSync, writeFileSync, existsSync, copyFileSync, unlinkSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync, existsSync, copyFileSync, unlinkSync } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, relative } from 'node:path';
 import MiniSearch from 'minisearch';
 import chokidar, { type FSWatcher } from 'chokidar';
-import type { Instrument, SongRecord, SongSource, TextTab } from '@fretforge/shared';
+import type { Instrument, Revision, SongRecord, SongSource, TextTab } from '@fretforge/shared';
 import { Store, contentHash, shortId } from './store';
 import { ALL_EXTENSIONS, SCORE_EXTENSIONS, exportGp7, extOf, loadScore, summarizeScore, UnsupportedFormatError } from './score';
 import type * as alphaTab from '@coderline/alphatab';
@@ -18,6 +18,18 @@ export interface ListQuery {
   sort?: 'recent' | 'title' | 'artist' | 'added' | 'played';
   favorites?: boolean;
   limit?: number;
+  /** personal fields (favorites, recent) come from this user */
+  userId: string;
+  tuning?: string;
+  source?: string;
+  /** only songs with recordings/stems */
+  withAudio?: boolean;
+  /** only songs in this playlist (in playlist order) */
+  ids?: string[];
+  /** only tabs this user made or edited */
+  mine?: boolean;
+  /** only songs this user pinned for offline use */
+  offline?: boolean;
 }
 
 /** Guess "Artist - Title" from a file name when the file has no metadata. */
@@ -92,12 +104,68 @@ export class Library {
       addedAt: prev?.addedAt ?? now,
       updatedAt: now,
       fileMtime: opts.mtime,
-      favorite: prev?.favorite,
-      lastOpenedAt: prev?.lastOpenedAt,
-      openCount: prev?.openCount,
-      practice: prev?.practice,
       warnings: opts.warnings?.length ? opts.warnings : undefined,
+      ...(prev?.revision ? {
+        // an edited revision is the default: keep showing it; the new file content becomes revision 0
+        file: prev.file, ext: prev.ext, tracks: prev.tracks, instruments: prev.instruments, tempo: prev.tempo, bars: prev.bars,
+        hasLyrics: prev.hasLyrics, revision: prev.revision, title: prev.title, artist: prev.artist,
+      } : {}),
     };
+  }
+
+  /** Saves edited score bytes as a new revision and makes it the default. */
+  saveRevision(song: SongRecord, bytes: Uint8Array, user: { id: string; name: string } | null, message: string): Revision {
+    const score = loadScore(bytes, 'gp');
+    const sum = summarizeScore(score);
+    const revs = this.store.revisions(song.id);
+    if (!revs.length) {
+      // the file as imported becomes revision 0
+      this.store.addRevision({
+        rev: 0, songId: song.id, userId: null, userName: song.source.kind === 'created' ? 'New tab' : 'Original', message: 'Original',
+        createdAt: song.addedAt, file: song.file, bytes: existsSync(this.absFile(song)) ? statSync(this.absFile(song)).size : 0,
+      });
+    }
+    const rev = Math.max(0, ...this.store.revisions(song.id).map((r) => r.rev)) + 1;
+    const file = join('revisions', song.id, `${rev}.gp`);
+    mkdirSync(join(this.dataDir, 'revisions', song.id), { recursive: true });
+    writeFileSync(join(this.dataDir, file), bytes);
+    const r: Revision = { rev, songId: song.id, userId: user?.id ?? null, userName: user?.name ?? 'Someone', message: message.trim().slice(0, 200) || 'Edited', createdAt: Date.now(), file, bytes: bytes.length };
+    this.store.addRevision(r);
+    this.store.patch(song.id, {
+      file, ext: 'gp', revision: rev, tracks: sum.tracks, instruments: sum.instruments, tempo: sum.tempo, bars: sum.bars, hasLyrics: sum.hasLyrics,
+      title: sum.title || song.title, artist: sum.artist || song.artist,
+    });
+    return r;
+  }
+
+  /** Makes an existing revision the default one. */
+  useRevision(song: SongRecord, rev: number): SongRecord {
+    const r = this.store.revisions(song.id).find((x) => x.rev === rev);
+    if (!r) throw Object.assign(new Error('That revision doesn’t exist.'), { statusCode: 404 });
+    const path = isAbsolute(r.file) ? r.file : join(this.dataDir, r.file);
+    const bytes = readFileSync(path);
+    const score = loadScore(bytes, extOf(r.file) || 'gp');
+    const sum = summarizeScore(score);
+    return this.store.patch(song.id, {
+      file: r.file, ext: extOf(r.file) || 'gp', revision: rev, tracks: sum.tracks, instruments: sum.instruments, tempo: sum.tempo,
+      bars: sum.bars, hasLyrics: sum.hasLyrics,
+    })!;
+  }
+
+  revisionPath(song: SongRecord, rev: number): string | null {
+    const r = this.store.revisions(song.id).find((x) => x.rev === rev);
+    if (!r) return rev === 0 ? this.absFile(song) : null;
+    return isAbsolute(r.file) ? r.file : join(this.dataDir, r.file);
+  }
+
+  /** A brand-new tab made in the editor. */
+  createSong(bytes: Uint8Array, user: { id: string; name: string } | null): SongRecord {
+    const score = loadScore(bytes, 'gp');
+    const id = shortId('created:' + Date.now() + ':' + Math.random());
+    const rec = this.recordFromScore({ id, score, ext: 'gp', hash: contentHash(bytes), source: { kind: 'created', ref: id, variant: user ? `by ${user.name}` : undefined } });
+    rec.createdBy = user?.id;
+    this.store.put(rec);
+    return rec;
   }
 
   /** Import (or re-import) a file from disk. Returns null when skipped as a duplicate. */
@@ -166,7 +234,6 @@ export class Library {
       id, title: opts.title, artist: opts.artist, album: '', format: 'text', file, ext: 'txt', source: opts.source,
       tracks: [], instruments: opts.instruments, tempo: null, bars: 0, hasLyrics: /[a-z]{3,}/i.test(opts.tab.content),
       hash: contentHash(json), addedAt: prev?.addedAt ?? now, updatedAt: now,
-      favorite: prev?.favorite, lastOpenedAt: prev?.lastOpenedAt, openCount: prev?.openCount, practice: prev?.practice,
     };
     this.store.put(rec);
     return rec;
@@ -176,6 +243,11 @@ export class Library {
     const s = this.store.song(id);
     if (!s) return;
     if (!isAbsolute(s.file)) { try { unlinkSync(this.absFile(s)); } catch { /* already gone */ } }
+    try { rmSync(join(this.dataDir, 'revisions', id), { recursive: true, force: true }); } catch { /* ignore */ }
+    for (const a of this.store.audioFor(id)) {
+      try { unlinkSync(join(this.dataDir, a.file)); } catch { /* ignore */ }
+      this.store.removeAudio(a.id);
+    }
     this.store.remove(id);
   }
 
@@ -248,7 +320,7 @@ export class Library {
     return ms;
   }
 
-  list(q: ListQuery = {}): SongRecord[] {
+  list(q: ListQuery): SongRecord[] {
     let songs: SongRecord[];
     const text = (q.q ?? '').trim();
     if (text) {
@@ -256,11 +328,21 @@ export class Library {
       let hits = idx.search(text);
       if (!hits.length) hits = idx.search(text, { combineWith: 'OR' });
       songs = hits.map((h) => this.store.song(h.id as string)).filter((s): s is SongRecord => !!s);
+    } else if (q.ids) {
+      songs = q.ids.map((id) => this.store.song(id)).filter((s): s is SongRecord => !!s);
     } else {
       songs = this.store.songs();
     }
+    if (q.ids && text) { const set = new Set(q.ids); songs = songs.filter((s) => set.has(s.id)); }
+    songs = songs.map((s) => this.store.songFor(q.userId, s));
     if (q.instrument && q.instrument !== 'all') songs = songs.filter((s) => s.instruments.includes(q.instrument as Instrument));
+    if (q.tuning) songs = songs.filter((s) => s.tracks.some((t) => t.tuningName === q.tuning));
+    if (q.source) songs = songs.filter((s) => s.source.kind === q.source || (q.source === 'local' && s.source.kind === 'upload'));
+    if (q.withAudio) songs = songs.filter((s) => (s.audioCount ?? 0) > 0);
     if (q.favorites) songs = songs.filter((s) => s.favorite);
+    if (q.offline) songs = songs.filter((s) => s.offline);
+    if (q.mine) songs = songs.filter((s) => s.createdBy === q.userId || this.store.revisions(s.id).some((r) => r.userId === q.userId));
+    if (q.ids && !q.sort) return q.limit ? songs.slice(0, q.limit) : songs;
     if (!text || q.sort) {
       const sort = q.sort ?? 'artist';
       const key = (s: SongRecord) => (s.artist || '~').toLowerCase() + '\u0000' + s.title.toLowerCase();

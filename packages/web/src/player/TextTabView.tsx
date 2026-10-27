@@ -9,7 +9,7 @@ import { Tuner } from './Tuner';
 import { useWakeLock } from '../lib/wakeLock';
 
 /** Ultimate Guitar chord sheets and text tabs: transpose, capo, chord shapes, auto-scroll. */
-export function TextTabView({ song, onClose, onPatch }: { song: SongRecord; onClose: () => void; onPatch: (p: Partial<SongRecord>) => void }) {
+export function TextTabView({ song, onClose, onPatch, loadText, readOnly }: { song: SongRecord; onClose: () => void; onPatch: (p: Partial<SongRecord>) => void; loadText?: () => Promise<TextTab>; readOnly?: boolean }) {
   const { prefs, toast } = useApp();
   const [tab, setTab] = useState<TextTab | null>(null);
   const [transpose, setTranspose] = useState(song.practice?.transpose ?? 0);
@@ -22,7 +22,7 @@ export function TextTabView({ song, onClose, onPatch }: { song: SongRecord; onCl
   const scroller = useRef<HTMLDivElement>(null);
   useWakeLock(scrolling);
 
-  useEffect(() => { api.songText(song.id).then(setTab).catch((e) => toast(e.message)); }, [song.id, toast]);
+  useEffect(() => { (loadText ?? (() => api.songText(song.id)))().then(setTab).catch((e) => toast(e.message)); }, [song.id, toast]); // eslint-disable-line react-hooks/exhaustive-deps
   const effCapo = capo ?? tab?.capo ?? 0;
   useEffect(() => { onPatch({ practice: { transpose, capo: capo ?? undefined } }); }, [transpose, capo]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { try { localStorage.setItem('ff-tt-size', String(size)); } catch { /* ignore */ } }, [size]);
@@ -68,7 +68,7 @@ export function TextTabView({ song, onClose, onPatch }: { song: SongRecord; onCl
   return (
     <div className="player">
       <div className="player-head">
-        <button className="iconbtn" onClick={onClose} aria-label="Back to library">{Icon.back()}</button>
+        {!readOnly && <button className="iconbtn" onClick={onClose} aria-label="Back to library">{Icon.back()}</button>}
         <div className="grow">
           <h1>{song.title}</h1>
           <div className="who">{song.artist}{tab ? ` · ${tab.type}` : ''}{tab?.key ? ` · key of ${tab.key}` : ''}{tab?.tuning ? ` · ${tab.tuning}` : ''}</div>

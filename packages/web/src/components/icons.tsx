@@ -33,6 +33,20 @@ export const Icon = {
   trash: (p?: P) => svg(<><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" /></>, p),
   refresh: (p?: P) => svg(<><path d="M20 11a8 8 0 1 0-2.3 5.7" /><path d="M20 4v7h-7" /></>, p),
   close: (p?: P) => svg(<path d="M6 6l12 12M18 6 6 18" />, p),
+  amp: (p?: P) => svg(<><rect x="2.5" y="5" width="19" height="14" rx="2" /><path d="M2.5 10h19" /><circle cx="7" cy="7.5" r=".6" fill="currentColor" /><circle cx="10" cy="7.5" r=".6" fill="currentColor" /><circle cx="13" cy="7.5" r=".6" fill="currentColor" /><path d="M6 13h12M6 16h12" opacity=".6" /></>, p),
+  bell: (p?: P) => svg(<><path d="M6 16V11a6 6 0 1 1 12 0v5l2 2H4z" /><path d="M10 21h4" /></>, p),
+  share: (p?: P) => svg(<><circle cx="18" cy="5" r="2.5" /><circle cx="6" cy="12" r="2.5" /><circle cx="18" cy="19" r="2.5" /><path d="m8.2 10.8 7.6-4.4M8.2 13.2l7.6 4.4" /></>, p),
+  download: (p?: P) => svg(<><path d="M12 4v12" /><path d="m6 10 6 6 6-6" /><path d="M4 20h16" /></>, p),
+  edit: (p?: P) => svg(<><path d="M4 20h4L19 9l-4-4L4 16z" /><path d="m13.5 6.5 4 4" /></>, p),
+  comment: (p?: P) => svg(<path d="M4 5h16v11H9l-5 4z" />, p),
+  history: (p?: P) => svg(<><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5" /><path d="M12 8v4l3 2" /></>, p),
+  list: (p?: P) => svg(<><path d="M8 6h13M8 12h13M8 18h13" /><circle cx="4" cy="6" r="1" fill="currentColor" /><circle cx="4" cy="12" r="1" fill="currentColor" /><circle cx="4" cy="18" r="1" fill="currentColor" /></>, p),
+  mic: (p?: P) => svg(<><rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v4" /></>, p),
+  power: (p?: P) => svg(<><path d="M12 3v9" /><path d="M6.3 7.3a8 8 0 1 0 11.4 0" /></>, p),
+  undo: (p?: P) => svg(<><path d="M9 14 4 9l5-5" /><path d="M4 9h11a5 5 0 0 1 0 10h-3" /></>, p),
+  redo: (p?: P) => svg(<><path d="m15 14 5-5-5-5" /><path d="M20 9H9a5 5 0 0 0 0 10h3" /></>, p),
+  save: (p?: P) => svg(<><path d="M5 3h11l5 5v13H5z" /><path d="M8 3v6h8V3M8 21v-7h8v7" /></>, p),
+  offline: (p?: P) => svg(<><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 21h14" /></>, p),
 };
 
 export function InstrumentIcon({ i, size = 18 }: { i: Instrument; size?: number }) {

@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Instrument, SongRecord } from '@fretforge/shared';
+import type { Instrument, Playlist, SongRecord } from '@fretforge/shared';
 import { INSTRUMENT_LABELS } from '@fretforge/shared';
-import { api } from '../api';
-import { useApp, useDebounced } from '../lib/app';
+import { api, type SongQuery } from '../api';
+import { go, useApp, useDebounced } from '../lib/app';
 import { Icon, InstrumentIcon } from './icons';
 import { SongRow } from './SongRow';
+import { pinOffline } from '../lib/offline';
+import { askConfirm, askText } from '../lib/dialog';
 
 const INSTRUMENTS: (Instrument | 'all')[] = ['all', 'guitar', 'bass', 'drums', 'keys', 'vocals'];
 const SORTS = [['artist', 'Artist'], ['title', 'Title'], ['added', 'Recently added'], ['recent', 'Recently played'], ['played', 'Most played']] as const;
+const SOURCES = [['', 'All sources'], ['local', 'My files'], ['songsterr', 'Songsterr'], ['ultimate-guitar', 'Ultimate Guitar'], ['created', 'Made here'], ['demo', 'Demos']] as const;
 
 export function InstrumentFilter() {
   const { prefs, setPrefs } = useApp();
@@ -22,29 +25,75 @@ export function InstrumentFilter() {
   );
 }
 
-export function LibraryView() {
-  const { prefs, toast } = useApp();
+let playlistCache: Playlist[] = [];
+
+export function usePlaylists() {
+  const [list, setList] = useState<Playlist[]>(playlistCache);
+  const load = useCallback(() => api.playlists().then((r) => { playlistCache = r.playlists; setList(r.playlists); }).catch(() => {}), []);
+  useEffect(() => { load(); }, [load]);
+  return { playlists: list, reload: load };
+}
+
+/** “Add to playlist” menu for one song. */
+export function PlaylistMenu({ song, onClose }: { song: SongRecord; onClose: () => void }) {
+  const { toast, user } = useApp();
+  const { playlists, reload } = usePlaylists();
+  const [name, setName] = useState('');
+  const mine = playlists.filter((p) => p.ownerId === user?.id || user?.role === 'owner');
+  return (
+    <div className="popover" style={{ top: 'calc(100% + 4px)', bottom: 'auto', left: 'auto', right: 0, minWidth: 240 }} onClick={(e) => e.stopPropagation()}>
+      <b style={{ fontSize: 13 }}>Add to playlist</b>
+      {mine.map((p) => {
+        const inIt = p.songIds.includes(song.id);
+        return (
+          <button key={p.id} className="btn sm ghost" style={{ justifyContent: 'flex-start' }} onClick={async (e) => {
+            e.preventDefault();
+            await api.patchPlaylist(p.id, inIt ? { remove: [song.id] } : { add: [song.id] });
+            toast(inIt ? `Removed from “${p.name}”` : `Added to “${p.name}”`);
+            reload();
+          }}>{inIt ? '✓' : '+'} {p.name}</button>
+        );
+      })}
+      <form className="row" style={{ gap: 6, flexWrap: 'nowrap' }} onSubmit={async (e) => { e.preventDefault(); if (!name.trim()) return; await api.createPlaylist(name.trim(), [song.id]); toast(`Created “${name.trim()}”`); setName(''); reload(); onClose(); }}>
+        <input type="text" className="grow" placeholder="New playlist" value={name} onChange={(e) => setName(e.target.value)} aria-label="New playlist name" />
+        <button className="btn sm" disabled={!name.trim()}>Create</button>
+      </form>
+    </div>
+  );
+}
+
+export function LibraryView({ playlist, view }: { playlist?: string; view?: 'favorites' | 'mine' | 'offline' } = {}) {
+  const { prefs, toast, user } = useApp();
+  const canEdit = user?.role !== 'viewer';
   const [songs, setSongs] = useState<SongRecord[] | null>(null);
   const [recent, setRecent] = useState<SongRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [filter, setFilter] = useState('');
   const [sort, setSort] = useState<string>(() => { try { return localStorage.getItem('ff-sort') || 'artist'; } catch { return 'artist'; } });
-  const [favOnly, setFavOnly] = useState(false);
+  const [tuning, setTuning] = useState('');
+  const [source, setSource] = useState('');
+  const [withAudio, setWithAudio] = useState(false);
+  const [tunings, setTunings] = useState<{ name: string; count: number }[]>([]);
   const [importing, setImporting] = useState(false);
   const [drag, setDrag] = useState(false);
   const [status, setStatus] = useState<Awaited<ReturnType<typeof api.libraryStatus>> | null>(null);
   const [showErrors, setShowErrors] = useState(false);
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const { playlists, reload: reloadPlaylists } = usePlaylists();
   const fileInput = useRef<HTMLInputElement>(null);
   const q = useDebounced(filter, 150);
+  const pl = playlist ? playlists.find((p) => p.id === playlist) : undefined;
 
   const load = useCallback(() => {
-    api.songs({ q, instrument: prefs.instrument, sort: q ? undefined : sort, favorites: favOnly })
-      .then((r) => { setSongs(r.songs); setTotal(r.total); })
-      .catch((e) => toast(e.message));
-  }, [q, prefs.instrument, sort, favOnly, toast]);
+    const query: SongQuery = {
+      q, instrument: prefs.instrument, sort: q || playlist ? undefined : sort, favorites: view === 'favorites', mine: view === 'mine',
+      offline: view === 'offline', tuning: tuning || undefined, source: source || undefined, audio: withAudio, playlist,
+    };
+    api.songs(query).then((r) => { setSongs(r.songs); setTotal(r.total); }).catch((e) => toast(e.message));
+  }, [q, prefs.instrument, sort, view, tuning, source, withAudio, playlist, toast]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { api.history().then((r) => setRecent(r.songs.slice(0, 6))).catch(() => {}); }, []);
+  useEffect(() => { api.history().then((r) => setRecent(r.songs.slice(0, 6))).catch(() => {}); api.facets().then((r) => setTunings(r.tunings)).catch(() => {}); }, []);
   useEffect(() => {
     let alive = true;
     const poll = () => api.libraryStatus().then((s) => {
@@ -59,9 +108,15 @@ export function LibraryView() {
     return () => { alive = false; clearInterval(t); };
   }, [load]);
   useEffect(() => { try { localStorage.setItem('ff-sort', sort); } catch { /* private mode */ } }, [sort]);
+  useEffect(() => {
+    if (!menuFor) return;
+    const close = () => setMenuFor(null);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, [menuFor]);
 
   const doImport = async (files: File[]) => {
-    if (!files.length) return;
+    if (!files.length || !canEdit) return;
     setImporting(true);
     try {
       const r = await api.importFiles(files);
@@ -80,13 +135,42 @@ export function LibraryView() {
     setSongs((list) => list?.map((x) => (x.id === s.id ? updated : x)) ?? null);
   };
 
+  const move = async (id: string, delta: number) => {
+    if (!pl) return;
+    const ids = [...pl.songIds];
+    const i = ids.indexOf(id), j = i + delta;
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    await api.patchPlaylist(pl.id, { songIds: ids });
+    reloadPlaylists();
+    setSongs((list) => { if (!list) return list; const l = [...list]; const a = l.findIndex((x) => x.id === id); const b = a + delta; if (b < 0 || b >= l.length) return l; [l[a], l[b]] = [l[b], l[a]]; return l; });
+  };
+
+  const title = pl ? pl.name : view === 'favorites' ? 'Favorites' : view === 'mine' ? 'My tabs' : view === 'offline' ? 'Available offline' : 'Library';
+  const filtered = !!(tuning || source || withAudio);
+
   return (
     <div className="page"
-      onDragOver={(e) => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDrag(true); } }}
+      onDragOver={(e) => { if (canEdit && e.dataTransfer.types.includes('Files')) { e.preventDefault(); setDrag(true); } }}
       onDragLeave={(e) => { if (e.currentTarget === e.target) setDrag(false); }}
       onDrop={(e) => { e.preventDefault(); setDrag(false); doImport([...e.dataTransfer.files]); }}>
-      {recent.length > 0 && !q && (
-        <section className="grid" style={{ display: 'grid', gap: 10 }}>
+      <nav className="libnav" aria-label="Collections">
+        <a href="#/" aria-current={!playlist && !view ? 'page' : undefined}>All songs</a>
+        <a href="#/favorites" aria-current={view === 'favorites' ? 'page' : undefined}>{Icon.star({ size: 14 })} Favorites</a>
+        <a href="#/mine" aria-current={view === 'mine' ? 'page' : undefined}>{Icon.edit({ size: 14 })} My tabs</a>
+        <a href="#/offline" aria-current={view === 'offline' ? 'page' : undefined}>{Icon.offline({ size: 14 })} Offline</a>
+        {playlists.map((p) => <a key={p.id} href={`#/playlist/${p.id}`} aria-current={playlist === p.id ? 'page' : undefined}>{Icon.list({ size: 14 })} {p.name}{p.shared ? ' ·' : ''}</a>)}
+        <button className="libnav-add" onClick={async () => {
+          const name = await askText('New playlist', { label: 'Name', ok: 'Create' });
+          if (!name?.trim()) return;
+          const p = await api.createPlaylist(name.trim());
+          await reloadPlaylists();
+          go(`/playlist/${p.id}`);
+        }}>{Icon.plus({ size: 14 })} Playlist</button>
+      </nav>
+
+      {recent.length > 0 && !q && !playlist && !view && !filtered && (
+        <section style={{ display: 'grid', gap: 10 }}>
           <div className="section-h"><h2>Pick up where you left off</h2></div>
           <div className="card songlist">
             {recent.map((s) => <SongRow key={s.id} song={s} preferred={prefs.instrument} />)}
@@ -96,36 +180,77 @@ export function LibraryView() {
 
       <section style={{ display: 'grid', gap: 12 }}>
         <div className="section-h">
-          <h2>Library</h2>
-          <span className="muted">{total} song{total === 1 ? '' : 's'}{status?.scanning ? ' · scanning your folder…' : ''}</span>
+          <h2>{title}</h2>
+          <span className="muted">{pl ? `${pl.songIds.length} song${pl.songIds.length === 1 ? '' : 's'}${pl.ownerName && pl.ownerId !== user?.id ? ` · by ${pl.ownerName}` : ''}` : `${songs?.length ?? 0} of ${total} song${total === 1 ? '' : 's'}`}{status?.scanning ? ' · scanning your folder…' : ''}</span>
           <span className="grow" />
-          <button className="btn sm" onClick={() => fileInput.current?.click()} disabled={importing}>
-            {importing ? <span className="spinner" /> : Icon.upload({ size: 15 })} Import files
-          </button>
+          {pl && (pl.ownerId === user?.id || user?.role === 'owner') && (
+            <>
+              <label className="row" style={{ gap: 6, fontSize: 13 }}><input type="checkbox" checked={pl.shared} onChange={async (e) => { await api.patchPlaylist(pl.id, { shared: e.target.checked }); reloadPlaylists(); }} /> Shared with everyone</label>
+              <button className="btn sm" onClick={async () => { const n = await askText('Rename playlist', { value: pl.name, ok: 'Rename' }); if (n?.trim()) { await api.patchPlaylist(pl.id, { name: n.trim() }); reloadPlaylists(); } }}>Rename</button>
+              <button className="btn sm" title="Queue stem separation for every song with a recording, to run in the idle window" onClick={async () => { try { const r = await api.separatePlaylist(pl.id); toast(r.added.length ? `Queued ${r.added.length} song${r.added.length === 1 ? '' : 's'} for tonight` : 'Nothing to separate: no recordings without stems'); } catch (e) { toast((e as Error).message); } }}>Separate overnight</button>
+              <button className="btn sm danger" onClick={async () => { if (await askConfirm(`Delete “${pl.name}”?`, { body: 'The songs stay in the library.', ok: 'Delete', danger: true })) { await api.deletePlaylist(pl.id); reloadPlaylists(); go('/'); } }}>{Icon.trash({ size: 14 })}</button>
+            </>
+          )}
+          {!pl && canEdit && (
+            <>
+              <a className="btn sm" href="#/new">{Icon.plus({ size: 15 })} New tab</a>
+              <button className="btn sm" onClick={() => fileInput.current?.click()} disabled={importing}>
+                {importing ? <span className="spinner" /> : Icon.upload({ size: 15 })} Import files
+              </button>
+            </>
+          )}
           <input ref={fileInput} type="file" multiple hidden accept=".gp,.gp3,.gp4,.gp5,.gpx,.musicxml,.mxl,.xml,.mid,.midi,.capx"
             onChange={(e) => { doImport([...(e.target.files ?? [])]); e.target.value = ''; }} />
         </div>
         <InstrumentFilter />
         <div className="row">
           <input type="search" id="library-filter" className="grow" placeholder="Filter by title, artist, album or tuning" value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter library" />
-          <select id="library-sort" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort" disabled={!!q}>
+          <select id="library-sort" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort" disabled={!!q || !!playlist}>
             {SORTS.map(([k, t]) => <option key={k} value={k}>{t}</option>)}
           </select>
-          <button className="chip" aria-pressed={favOnly} onClick={() => setFavOnly(!favOnly)}>{Icon.star({ size: 14 })} Favorites</button>
+          <select id="library-tuning" value={tuning} onChange={(e) => setTuning(e.target.value)} aria-label="Tuning">
+            <option value="">Any tuning</option>
+            {tunings.map((t) => <option key={t.name} value={t.name}>{t.name} ({t.count})</option>)}
+          </select>
+          <select id="library-source" value={source} onChange={(e) => setSource(e.target.value)} aria-label="Source">
+            {SOURCES.map(([k, t]) => <option key={k} value={k}>{t}</option>)}
+          </select>
+          <button className="chip" aria-pressed={withAudio} onClick={() => setWithAudio(!withAudio)}>{Icon.mic({ size: 14 })} With recordings</button>
         </div>
         {drag && <div className="dropzone">Drop Guitar Pro, MusicXML or MIDI files to import them</div>}
         {songs === null ? <div className="empty"><span className="spinner" /></div>
           : songs.length === 0 ? (
             <div className="empty">
-              <b>{total ? 'Nothing matches' : 'Your library is empty'}</b>
-              {total ? 'Try another filter or instrument.' : <>Drop Guitar Pro files here, put them in <span className="mono">{status?.dir}</span>, or search Songsterr and Ultimate Guitar from the bar above.</>}
+              <b>{pl ? 'This playlist is empty' : view === 'favorites' ? 'No favorites yet' : view === 'mine' ? 'You haven’t made or edited a tab yet' : view === 'offline' ? 'Nothing is saved for offline use' : total ? 'Nothing matches' : 'Your library is empty'}</b>
+              {pl ? 'Add songs with the ⋯ button on any song.' : view === 'offline' ? 'Open a song and choose “Keep offline” in its ⋯ menu.' : view ? '' : total ? 'Try another filter or instrument.' : <>Drop Guitar Pro files here, put them in <span className="mono">{status?.dir}</span>, or search Songsterr and Ultimate Guitar from the bar above.</>}
             </div>
           ) : (
             <div className="card songlist">
-              {songs.map((s) => <SongRow key={s.id} song={s} preferred={prefs.instrument} onFavorite={toggleFav} />)}
+              {songs.map((s, i) => (
+                <div key={s.id} className="songwrap">
+                  <SongRow song={s} preferred={prefs.instrument} onFavorite={toggleFav} />
+                  <div className="songtools">
+                    {pl && (pl.ownerId === user?.id || user?.role === 'owner') && (
+                      <>
+                        <button className="iconbtn" aria-label="Move up" disabled={i === 0} onClick={() => move(s.id, -1)}>▲</button>
+                        <button className="iconbtn" aria-label="Move down" disabled={i === songs.length - 1} onClick={() => move(s.id, 1)}>▼</button>
+                      </>
+                    )}
+                    <span className="popwrap">
+                      <button className="iconbtn" aria-label={`More for ${s.title}`} onClick={(e) => { e.stopPropagation(); setMenuFor(menuFor === s.id ? null : s.id); }}>⋯</button>
+                      {menuFor === s.id && (
+                        <div onClick={(e) => e.stopPropagation()}>
+                          <PlaylistMenu song={s} onClose={() => setMenuFor(null)} />
+                        </div>
+                      )}
+                    </span>
+                    {view === 'offline' && <button className="iconbtn" aria-label="Remove from offline" onClick={async () => { await pinOffline(s, false); load(); }}>{Icon.close({ size: 14 })}</button>}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
-        {status && status.errors.length > 0 && (
+        {status && status.errors.length > 0 && !playlist && !view && (
           <div className="card" style={{ padding: '10px 14px' }}>
             <button className="btn ghost sm" onClick={() => setShowErrors(!showErrors)}>
               {status.errors.length} file{status.errors.length === 1 ? '' : 's'} in your folder couldn’t be imported {showErrors ? '▴' : '▾'}

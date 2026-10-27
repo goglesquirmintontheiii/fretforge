@@ -5,7 +5,7 @@ import { useApp } from '../lib/app';
 import { ScorePlayer } from './ScorePlayer';
 import { TextTabView } from './TextTabView';
 
-export function SongView({ id, onClose }: { id: string; onClose: () => void }) {
+export function SongView({ id, onClose, edit }: { id: string; onClose: () => void; edit?: boolean }) {
   const { toast } = useApp();
   const [song, setSong] = useState<SongRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -39,5 +39,5 @@ export function SongView({ id, onClose }: { id: string; onClose: () => void }) {
   if (error) return <div className="page"><div className="error">{error}</div><button className="btn" onClick={onClose}>Back to library</button></div>;
   if (!song) return <div className="page"><div className="empty"><span className="spinner" /></div></div>;
   if (song.format === 'text') return <TextTabView song={song} onClose={onClose} onPatch={onPatch} />;
-  return <ScorePlayer song={song} onClose={onClose} onPatch={onPatch} onToast={toast} />;
+  return <ScorePlayer song={song} onClose={onClose} onPatch={onPatch} onToast={toast} edit={edit} onSongChange={(s) => setSong(s)} />;
 }

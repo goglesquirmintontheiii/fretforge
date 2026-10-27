@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { compileNam, ForgeDsp, NamError, namNormalizeGain, RigParam, renderThroughRig } from '@fretforge/shared';
+import { compileNam, NamError, namNormalizeGain } from '@fretforge/shared';
+import { ForgeDsp, RigParam, renderThroughRig } from '../../web/src/audio/forgeDsp';
 
 const fx = (f: string) => join(__dirname, 'fixtures', f);
 const f32 = (f: string) => { const b = readFileSync(fx(f)); return new Float32Array(b.buffer, b.byteOffset, b.byteLength / 4); };

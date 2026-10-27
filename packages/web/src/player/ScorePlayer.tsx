@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as alphaTab from '@coderline/alphatab';
-import type { Instrument, PracticeState, SongRecord } from '@fretforge/shared';
+import type { AmpSettings, AudioAsset, Instrument, PlaySource, PracticeState, SongRecord } from '@fretforge/shared';
 import { INSTRUMENT_LABELS, capoShapeName, chordFromPitches, chordShapes, formatTime, gainToDb, tuningName } from '@fretforge/shared';
 import { api } from '../api';
 import { go, useApp } from '../lib/app';
@@ -12,10 +12,21 @@ import { ChordDiagram } from '../components/ChordDiagram';
 import { Fretboard } from './Fretboard';
 import { Tuner } from './Tuner';
 import { ShortcutsHelp } from './Shortcuts';
+import { useEngine } from './useEngine';
+import { AmpDialog } from './AmpDialog';
+import { AudioPanel } from './AudioPanel';
+import { ampActive } from '../audio/engine';
+import { useEditor } from '../editor/useEditor';
+import { CommentsPanel } from './CommentsPanel';
+import { RevisionsDialog } from './RevisionsDialog';
+import { exportAlphaTex, exportGp, exportMidi, printScore } from './exporters';
+import { pinOffline } from '../lib/offline';
+import { PlaylistMenu } from '../components/LibraryView';
+import { askConfirm } from '../lib/dialog';
 
 type Mix = Record<number, { volume: number; mute: boolean; solo: boolean }>;
 type View = 'tab' | 'notation' | 'both';
-type SideTab = 'mixer' | 'chords' | 'lyrics';
+type SideTab = 'mixer' | 'chords' | 'lyrics' | 'audio' | 'comments';
 interface Trainer { on: boolean; start: number; step: number; target: number; passes: number }
 
 const SPEED_PRESETS = [0.25, 0.5, 0.75, 0.9, 1];
@@ -46,10 +57,17 @@ function trackBeats(score: alphaTab.model.Score, track: number): alphaTab.model.
   return staff.bars.flatMap((b) => b.voices[0]?.beats ?? []);
 }
 
-export function ScorePlayer({ song, onClose, onPatch, onToast }: {
+export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, loadFile, onSongChange }: {
   song: SongRecord; onClose: () => void; onPatch: (p: Partial<SongRecord>) => void; onToast: (m: string) => void;
+  /** open in the tab editor */
+  edit?: boolean;
+  /** shared link: no saving, no editing, no recordings */
+  readOnly?: boolean;
+  loadFile?: () => Promise<ArrayBuffer>;
+  onSongChange?: (s: SongRecord) => void;
 }) {
-  const { prefs, setPrefs } = useApp();
+  const { prefs, setPrefs, user } = useApp();
+  const canEdit = !readOnly && user?.role !== 'viewer';
   const wrapRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const apiRef = useRef<alphaTab.AlphaTabApi | null>(null);
@@ -86,8 +104,28 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
   const [pop, setPop] = useState<null | 'speed' | 'loop' | 'pitch' | 'view'>(null);
   const [tuner, setTuner] = useState(false);
   const [help, setHelp] = useState(false);
+  const [amps, setAmps] = useState<Record<string, AmpSettings>>(() => p.amps ?? {});
+  const [playSource, setPlaySource] = useState<PlaySource>(p.playSource ?? 'tab');
+  const [audio, setAudio] = useState<AudioAsset[]>([]);
+  const [audioMix, setAudioMix] = useState<NonNullable<PracticeState['audioMix']>>(() => p.audioMix ?? {});
+  const [ampFor, setAmpFor] = useState<number | null>(null);
+  const [scoreKey, setScoreKey] = useState('');
+  const transposeRef = useRef(transpose);
+  transposeRef.current = transpose;
+  const editVersion = useRef(0);
   const chordLineRef = useRef<HTMLDivElement>(null);
   useWakeLock(playing);
+
+  const loadAudio = useCallback(() => { if (!readOnly) api.audio(song.id).then((r) => setAudio(r.audio)).catch(() => {}); }, [song.id, readOnly]);
+  useEffect(() => { loadAudio(); }, [loadAudio]);
+  const effSource: PlaySource = playSource === 'recording' && audio.length ? 'recording' : 'tab';
+
+  const [editingNow, setEditingNow] = useState(!!edit);
+  const engine = useEngine({
+    apiRef, score, scoreKey, song, amps: editingNow ? {} : amps, playSource: editingNow ? 'tab' : effSource, audio: editingNow ? [] : audio, mix, audioMix, master, speed, pitch, metro, metroVol, countIn, looping, range, onToast,
+  });
+  const engineOn = useRef(false);
+  engineOn.current = engine.active;
 
   // Mirror state into a ref so alphaTab event handlers see current values
   const st = useRef({ speed, master, metro, metroVol, countIn, looping, mix, pitch, trainer, focus, visible, range, playing });
@@ -103,6 +141,15 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
     const a = apiRef.current, s = scoreRef.current;
     if (!a || !s) return;
     const c = st.current;
+    if (engineOn.current) {
+      // the mixer engine plays the sound; alphaTab only follows its clock
+      a.playbackSpeed = 1;
+      a.metronomeVolume = 0;
+      a.countInVolume = 0;
+      a.isLooping = false;
+      a.playbackRange = null;
+      return;
+    }
     a.playbackSpeed = c.speed;
     a.masterVolume = c.master;
     a.metronomeVolume = c.metro ? c.metroVol : 0;
@@ -114,7 +161,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
       a.changeTrackMute([t], m.mute);
       a.changeTrackSolo([t], m.solo);
     }
-    a.changeTrackTranspositionPitch(s.tracks.filter((t) => !t.staves[0]?.isPercussion), c.pitch);
+    a.changeTrackTranspositionPitch(s.tracks.filter((t) => !t.staves[0]?.isPercussion), engineOn.current ? 0 : c.pitch);
   }, []);
 
   // ------------------------------------------------------------------ build + render
@@ -144,6 +191,33 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
     const tracks = st.current.visible.filter((i) => i < s.tracks.length);
     a.renderScore(s, tracks.length ? tracks : [0]);
   }, [transpose, applyView, view, onToast]); // view handled separately after first build
+
+  const [marks, setMarks] = useState<number[]>([]);
+  const [markBoxes, setMarkBoxes] = useState<{ x: number; y: number; w: number; h: number }[]>([]);
+  const [revs, setRevs] = useState(false);
+  const editor = useEditor({
+    apiRef, scoreRef, song, focus, setFocus, visible, setVisible, onToast,
+    onSaved: (s2) => { onSongChange?.(s2); },
+    rebuild: () => build(),
+    initial: edit && !readOnly,
+  });
+  editVersion.current = editor.version;
+  useEffect(() => { setEditingNow(editor.editing); if (editor.editing && transpose) { setTranspose(0); onToast('Transpose is off while editing'); } }, [editor.editing]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // boxes over bars that changed between revisions
+  useEffect(() => {
+    const a = apiRef.current;
+    if (!a || !marks.length) { setMarkBoxes([]); return; }
+    const place = () => {
+      const boxes: { x: number; y: number; w: number; h: number }[] = [];
+      for (const sys of a.boundsLookup?.staffSystems ?? []) for (const mb of sys.bars) {
+        if (marks.includes(mb.index)) boxes.push({ x: mb.realBounds.x, y: mb.realBounds.y, w: mb.realBounds.w, h: mb.realBounds.h });
+      }
+      setMarkBoxes(boxes);
+    };
+    place();
+    return a.postRenderFinished.on(place);
+  }, [marks]);
 
   // create alphaTab once
   useEffect(() => {
@@ -186,7 +260,11 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
     });
     a.soundFontLoad.on((e) => setSfProgress(e.total ? e.loaded / e.total : 0));
     a.playerReady.on(() => { setReady(true); applyAudio(); });
-    a.midiLoaded.on(() => applyAudio());
+    a.midiLoaded.on(() => {
+      applyAudio();
+      // renders are cached by this key: same song, revision, transposition and edit state = same audio
+      setScoreKey(`${song.id}:${song.hash}:${song.revision ?? 0}:${transposeRef.current}:${editVersion.current}`);
+    });
     a.playerStateChanged.on((e) => setPlaying(e.state === alphaTab.synth.PlayerState.Playing));
     let lastUi = 0;
     a.playerPositionChanged.on((e) => {
@@ -239,7 +317,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
     a.error.on((e) => { setRendering(null); onToast('Playback problem: ' + (e?.message ?? e)); });
 
     let cancelled = false;
-    api.songFile(song.id).then((buf) => {
+    (loadFile ?? (() => api.songFile(song.id)))().then((buf) => {
       if (cancelled) return;
       bytesRef.current = new Uint8Array(buf);
       build();
@@ -268,7 +346,20 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
   }, [view, visible]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // audio settings
-  useEffect(() => { applyAudio(); }, [speed, master, metro, metroVol, countIn, looping, mix, pitch, applyAudio]);
+  useEffect(() => { applyAudio(); }, [speed, master, metro, metroVol, countIn, looping, mix, pitch, range, engine.active, applyAudio]);
+  // leaving engine mode: give alphaTab its loop range back
+  useEffect(() => {
+    const a = apiRef.current, s = scoreRef.current;
+    if (engine.active || !a || !s || !range) return;
+    const beats = (b: number) => s.tracks[st.current.visible[0] ?? 0]?.staves[0]?.bars[b]?.voices[0]?.beats ?? [];
+    const first = beats(range.startBar)[0], lastBar = beats(range.endBar), last = lastBar[lastBar.length - 1];
+    if (first && last && a.tickCache) {
+      snapGuard.current = true;
+      a.highlightPlaybackRange(first, last);
+      a.applyPlaybackRangeFromHighlight();
+      snapGuard.current = false;
+    }
+  }, [engine.active]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // display settings
   useEffect(() => {
@@ -286,8 +377,8 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
 
   // persist practice state
   useEffect(() => {
-    onPatch({ practice: { speed, loop: range, mixer: mix, masterVolume: master, transpose, pitchShift: pitch, visibleTracks: visible, view, capo } });
-  }, [speed, range, mix, master, transpose, pitch, visible, view, capo, onPatch]);
+    onPatch({ practice: { speed, loop: range, mixer: mix, masterVolume: master, transpose, pitchShift: pitch, visibleTracks: visible, view, capo, amps, playSource, audioMix } });
+  }, [speed, range, mix, master, transpose, pitch, visible, view, capo, amps, playSource, audioMix, onPatch]);
 
   // ------------------------------------------------------------------ actions
   const a = () => apiRef.current;
@@ -349,6 +440,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
   // ------------------------------------------------------------------ keyboard
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
+      if (editor.onKey(e)) return;
       if (e.key === 'Shift') shiftHeld.current = true;
       const t = e.target as HTMLElement;
       if (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) && (t as HTMLInputElement).type !== 'range') return;
@@ -488,7 +580,8 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
   return (
     <div className="player">
       <div className="player-head">
-        <button className="iconbtn" onClick={onClose} aria-label="Back to library">{Icon.back()}</button>
+        {!readOnly && <button className="iconbtn" onClick={async () => { if (!editor.editing || (await editor.stop())) onClose(); }} aria-label="Back to library">{Icon.back()}</button>}
+        {readOnly && <img src="/icon.svg" alt="Fretforge" width={28} height={28} />}
         <div className="grow" style={{ minWidth: 0 }}>
           <h1>{song.title}</h1>
           <div className="who">{song.artist || 'Unknown artist'}{song.tempo ? ` · ${Math.round(song.tempo)} bpm` : ''}</div>
@@ -511,14 +604,32 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
           </label>
         )}
         {tuningLabel && <span className={'badge' + (pitch ? ' accent' : '')} title={pitch ? `Written in ${tuningLabel}; with pitch shift, tune to ${tuneTo}` : 'Tuning'}>{pitch ? `Tune to ${tuneTo}` : tuningLabel}{summary?.capo ? ` · capo ${summary.capo}` : ''}</span>}
-        <FavoriteButton song={song} onPatch={onPatch} />
+        {marks.length > 0 && <button className="btn sm" onClick={() => setMarks([])}>Hide changes</button>}
+        {!readOnly && canEdit && !editor.editing && song.format === 'score' && <button className="btn sm hide-sm" onClick={() => editor.start()} title="Edit this tab">{Icon.edit({ size: 14 })} Edit</button>}
+        {!readOnly && <FavoriteButton song={song} onPatch={onPatch} />}
         {song.source.url && <a className="btn sm ghost hide-sm" href={song.source.url} target="_blank" rel="noreferrer" title="Open the original page">{Icon.external({ size: 14 })}</a>}
-        <SongMenu song={song} onToast={onToast} />
+        {!readOnly && <SongMenu song={song} onToast={onToast} canEdit={canEdit} onEdit={() => editor.start()} onRevisions={() => setRevs(true)}
+          onExport={(kind) => {
+            const a = apiRef.current, sc = scoreRef.current;
+            if (!a || !sc) return;
+            const name = `${song.artist ? song.artist + ' - ' : ''}${song.title}`;
+            if (kind === 'gp') exportGp(sc, a.settings, name);
+            else if (kind === 'midi') exportMidi(sc, a.settings, name);
+            else if (kind === 'tex') exportAlphaTex(sc, a.settings, name);
+            else printScore(sc, visible, name).catch((e) => onToast((e as Error).message));
+          }} />}
+        {readOnly && (
+          <button className="btn sm" onClick={() => { const a = apiRef.current, sc = scoreRef.current; if (a && sc) printScore(sc, visible, song.title).catch(() => {}); }}>Print / PDF</button>
+        )}
       </div>
 
       <div className="player-body">
         <div className="scorewrap" ref={wrapRef}>
-          <div ref={hostRef} />
+          <div className="hostwrap">
+            <div ref={hostRef} />
+            {editor.overlay}
+            {markBoxes.map((b, i) => <div key={i} className="diffmark" style={{ left: b.x, top: b.y, width: b.w, height: b.h }} />)}
+          </div>
           {rendering && <div className="loading-over"><span className="spinner" /><span>{rendering}</span></div>}
         </div>
         <aside className="side" hidden={!side} aria-label="Song panel">
@@ -526,30 +637,71 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
             <button role="tab" aria-selected={side === 'mixer'} onClick={() => setSide('mixer')}>Mixer</button>
             <button role="tab" aria-selected={side === 'chords'} onClick={() => setSide('chords')}>Chords</button>
             {hasLyricsTrack >= 0 && <button role="tab" aria-selected={side === 'lyrics'} onClick={() => setSide('lyrics')}>Lyrics</button>}
+            {!readOnly && <button role="tab" aria-selected={side === 'audio'} onClick={() => setSide('audio')}>Audio{audio.length ? <span className="dot" aria-label={`${audio.length} recordings`} /> : null}</button>}
+            {!readOnly && <button role="tab" aria-selected={side === 'comments'} onClick={() => setSide('comments')}>Notes{song.commentCount ? <span className="dot" aria-label={`${song.commentCount} comments`} /> : null}</button>}
             {window.innerWidth <= 960 && <button aria-label="Close panel" onClick={() => setSide(null)} style={{ flex: '0 0 44px' }}>{Icon.close({ size: 16 })}</button>}
           </div>
           {side === 'mixer' && (
             <div className="side-pane">
+              {audio.length > 0 && (
+                <div className="chips" role="group" aria-label="What plays">
+                  <button className="chip" aria-pressed={effSource === 'tab'} onClick={() => setPlaySource('tab')}>Tab sound</button>
+                  <button className="chip" aria-pressed={effSource === 'recording'} onClick={() => setPlaySource('recording')}>Recording</button>
+                </div>
+              )}
+              {engine.preparing && (
+                <div className="engstat" role="status"><span className="spinner" /> <span className="grow">{engine.preparing}…</span><span className="mono faint">{Math.round(engine.progress * 100)}%</span></div>
+              )}
               <div className="mix">
-                {tracks.map((t) => {
+                {effSource === 'tab' && tracks.map((t) => {
                   const m = mix[t.index] ?? { volume: 1, mute: false, solo: false };
                   const info = song.tracks[t.index];
+                  const amp = amps[t.index];
+                  const ts = engine.tracks[t.index];
+                  const hasAmp = ampActive(amp);
                   return (
                     <div className="mixrow" key={t.index}>
                       <div style={{ minWidth: 0, display: 'flex', gap: 7, alignItems: 'center' }}>
                         {info && <InstrumentIcon i={info.instrument} size={15} />}
                         <div style={{ minWidth: 0 }}>
                           <div className="nm" title={t.name}>{t.name || `Track ${t.index + 1}`}</div>
-                          <div className="sub">{info?.tuningName ?? (info?.isPercussion ? 'Drums' : '')} <span className="db">{gainToDb(m.mute ? 0 : m.volume)}</span></div>
+                          <div className="sub">{info?.tuningName ?? (info?.isPercussion ? 'Drums' : '')} <span className="db">{gainToDb(m.mute ? 0 : m.volume)}</span>
+                            {hasAmp && ts?.phase === 'amp' && <span className="badge info" style={{ marginLeft: 4 }}>amp {Math.round(ts.progress * 100)}%</span>}
+                            {ts?.phase === 'error' && <span className="badge bad" style={{ marginLeft: 4 }} title={ts.message}>amp failed</span>}
+                          </div>
                         </div>
                       </div>
-                      <button className={'vis' + (visible.includes(t.index) ? ' on' : '')} title="Show this track in the score" aria-pressed={visible.includes(t.index)} onClick={() => toggleVisible(t.index)}>👁</button>
+                      <span style={{ display: 'flex', gap: 4 }}>
+                        {!t.staves[0]?.isPercussion && canEdit !== undefined && (
+                          <button className={'ampbtn' + (hasAmp ? ' on' : '')} title={hasAmp ? 'Edit the amp on this track' : 'Put an amp (NAM model, cab IR) on this track'} aria-label={`Amp for ${t.name}`} onClick={() => setAmpFor(t.index)}>AMP</button>
+                        )}
+                        <button className={'vis' + (visible.includes(t.index) ? ' on' : '')} title="Show this track in the score" aria-pressed={visible.includes(t.index)} onClick={() => toggleVisible(t.index)}>👁</button>
+                      </span>
                       <span style={{ display: 'flex', gap: 4 }}>
                         <button className={'ms m' + (m.mute ? ' on' : '')} aria-pressed={m.mute} title="Mute" onClick={() => setTrackMix(t.index, { mute: !m.mute })}>M</button>
                         <button className={'ms s' + (m.solo ? ' on' : '')} aria-pressed={m.solo} title="Solo" onClick={() => setTrackMix(t.index, { solo: !m.solo })}>S</button>
                       </span>
                       <input type="range" min={0} max={1.5} step={0.01} value={m.volume} aria-label={`${t.name} volume`}
                         onChange={(e) => setTrackMix(t.index, { volume: Number(e.target.value) })} onDoubleClick={() => setTrackMix(t.index, { volume: 1 })} />
+                    </div>
+                  );
+                })}
+                {effSource === 'recording' && audio.map((x) => {
+                  const hasStems = audio.some((y) => y.kind === 'stem');
+                  const m = audioMix[x.id] ?? { volume: 1, mute: hasStems && x.kind === 'original', solo: false, pan: 0 };
+                  const setM = (patch: Partial<typeof m>) => setAudioMix((cur) => ({ ...cur, [x.id]: { ...m, ...patch } }));
+                  return (
+                    <div className="mixrow" key={x.id}>
+                      <div style={{ minWidth: 0 }}>
+                        <div className="nm" title={x.name}>{x.kind === 'original' ? '♪ ' : ''}{x.name}</div>
+                        <div className="sub">{x.kind === 'original' ? 'Full recording' : 'AI stem'} <span className="db">{gainToDb(m.mute ? 0 : m.volume)}</span></div>
+                      </div>
+                      <input type="range" className="pan" min={-1} max={1} step={0.05} value={m.pan ?? 0} aria-label={`${x.name} pan`} title="Pan" onChange={(e) => setM({ pan: Number(e.target.value) })} onDoubleClick={() => setM({ pan: 0 })} />
+                      <span style={{ display: 'flex', gap: 4 }}>
+                        <button className={'ms m' + (m.mute ? ' on' : '')} aria-pressed={m.mute} title="Mute" onClick={() => setM({ mute: !m.mute })}>M</button>
+                        <button className={'ms s' + (m.solo ? ' on' : '')} aria-pressed={m.solo} title="Solo" onClick={() => setM({ solo: !m.solo })}>S</button>
+                      </span>
+                      <input type="range" min={0} max={1.5} step={0.01} value={m.volume} aria-label={`${x.name} volume`} onChange={(e) => setM({ volume: Number(e.target.value) })} onDoubleClick={() => setM({ volume: 1 })} />
                     </div>
                   );
                 })}
@@ -565,8 +717,15 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
                   <input type="range" min={0} max={1.5} step={0.01} value={master} aria-label="Master volume" onChange={(e) => setMaster(Number(e.target.value))} onDoubleClick={() => setMaster(1)} />
                 </div>
               </div>
-              <p className="faint" style={{ margin: 0, fontSize: 12 }}>👁 shows a track in the score. Double-click a fader to reset it.</p>
+              <p className="faint" style={{ margin: 0, fontSize: 12 }}>
+                {engine.active ? `Mix mode: tracks play from renders${effSource === 'tab' ? ' through their amps' : ''}. ` : ''}👁 shows a track in the score. Double-click a fader to reset it.
+              </p>
             </div>
+          )}
+          {side === 'comments' && <CommentsPanel songId={song.id} bar={bar} revision={song.revision ?? 0} onGoto={(b) => gotoSection(b)} />}
+          {side === 'audio' && (
+            <AudioPanel songId={song.id} audio={audio} onAudioChanged={loadAudio} playSource={effSource} setPlaySource={setPlaySource}
+              api={apiRef.current} audioMs={engine.audioMs} canEdit={canEdit} />
           )}
           {side === 'chords' && (
             <div className="side-pane">
@@ -622,6 +781,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
         {showFretboard && focusTuning.length > 0 && (
           <div className="fretboard"><Fretboard tuning={focusTuning} notes={activeNotes} leftHanded={prefs.leftHanded} capo={summary?.capo ?? 0} /></div>
         )}
+        {editor.toolbar}
         <div className="transport">
           <button className="play" onClick={playPause} disabled={!ready} aria-label={playing ? 'Pause' : 'Play'} title={ready ? 'Play / pause (Space)' : `Loading sounds… ${Math.round(sfProgress * 100)}%`}>
             {!ready ? <span className="spinner" /> : playing ? Icon.pause({ size: 20 }) : Icon.play({ size: 20 })}
@@ -717,6 +877,12 @@ export function ScorePlayer({ song, onClose, onPatch, onToast }: {
       </div>
       {tuner && <Tuner tuning={focusTuning.length ? focusTuning : [64, 59, 55, 50, 45, 40]} tuningLabel={tuningLabel} referencePitch={prefs.referencePitch} onClose={() => setTuner(false)} />}
       {help && <ShortcutsHelp onClose={() => setHelp(false)} />}
+      {revs && <RevisionsDialog song={song} onClose={() => setRevs(false)} onChanged={(s2) => { onSongChange?.(s2); }} onHighlight={(b) => setMarks(b)} />}
+      {ampFor !== null && tracks[ampFor] && (
+        <AmpDialog trackName={tracks[ampFor].name || `Track ${ampFor + 1}`} value={amps[ampFor]} state={engine.tracks[ampFor]}
+          onChange={(a) => setAmps((cur) => { const n = { ...cur }; if (a) n[ampFor] = a; else delete n[ampFor]; return n; })}
+          onClose={() => setAmpFor(null)} />
+      )}
     </div>
   );
 }
@@ -772,32 +938,61 @@ function FavoriteButton({ song, onPatch }: { song: SongRecord; onPatch: (p: Part
   );
 }
 
-function SongMenu({ song, onToast }: { song: SongRecord; onToast: (m: string) => void }) {
+function SongMenu({ song, onToast, canEdit, onEdit, onRevisions, onExport }: {
+  song: SongRecord; onToast: (m: string) => void; canEdit: boolean; onEdit: () => void; onRevisions: () => void; onExport: (k: 'gp' | 'midi' | 'tex' | 'print') => void;
+}) {
+  const { prefs, user } = useApp();
   const [open, setOpen] = useState(false);
-  const [confirm, setConfirm] = useState(false);
+  const [sub, setSub] = useState<null | 'playlist' | 'export'>(null);
+  const [offline, setOffline] = useState(!!song.offline);
   const local = song.source.kind === 'local' || song.source.kind === 'upload';
   const online = song.source.kind === 'songsterr' || song.source.kind === 'ultimate-guitar';
+  const owner = user?.role === 'owner';
+  const close = () => { setOpen(false); setSub(null); };
   return (
     <div className="popwrap">
-      <button className="iconbtn" onClick={() => { setOpen(!open); setConfirm(false); }} aria-label="Song options">⋯</button>
+      <button className="iconbtn" onClick={() => { setOpen(!open); setSub(null); }} aria-label="Song options" aria-expanded={open}>⋯</button>
       {open && (
-        <div className="popover" style={{ left: 'auto', right: 0, top: 'calc(100% + 6px)', bottom: 'auto' }}>
-          {local && <span className="mono faint" style={{ fontSize: 11, wordBreak: 'break-all' }}>{song.source.ref}</span>}
-          {local && window.fretforgeDesktop && <button className="btn sm" onClick={() => window.fretforgeDesktop!.showItemInFolder(song.source.ref)}>Show file in folder</button>}
-          {online && <button className="btn sm" onClick={async () => { try { await api.openOnline(song.source.kind as never, song.source.ref, true); onToast('Downloaded the latest version'); location.reload(); } catch (e) { onToast((e as Error).message); } }}>{Icon.refresh({ size: 14 })} Download again</button>}
-          {song.warnings?.length ? <details><summary className="muted" style={{ fontSize: 12 }}>{song.warnings.length} conversion note{song.warnings.length === 1 ? '' : 's'}</summary><ul style={{ fontSize: 12, paddingLeft: 16 }}>{song.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul></details> : null}
-          {!confirm ? <button className="btn sm danger" onClick={() => setConfirm(true)}>{Icon.trash({ size: 14 })} {local ? 'Delete…' : 'Remove from library'}</button> : (
-            <div style={{ display: 'grid', gap: 6 }}>
-              <span style={{ fontSize: 13 }}>{local ? 'Delete the file from your library folder? This can’t be undone.' : 'Remove this song from your library?'}</span>
-              <div className="row">
-                <button className="btn sm danger" onClick={async () => { await api.deleteSong(song.id, local); go('/'); }}>{local ? 'Delete file' : 'Remove'}</button>
-                <button className="btn sm" onClick={() => setConfirm(false)}>Keep</button>
-              </div>
-            </div>
+        <div className="popover menu" style={{ left: 'auto', right: 0, top: 'calc(100% + 6px)', bottom: 'auto' }}>
+          {sub === 'playlist' ? <PlaylistMenu song={song} onClose={close} /> : sub === 'export' ? (
+            <>
+              <b style={{ fontSize: 13 }}>Export</b>
+              {song.format === 'score' && <button className="btn sm ghost" onClick={() => { onExport('gp'); close(); }}>Guitar Pro 7 (.gp)</button>}
+              {song.format === 'score' && <button className="btn sm ghost" onClick={() => { onExport('midi'); close(); }}>MIDI (.mid)</button>}
+              {song.format === 'score' && <button className="btn sm ghost" onClick={() => { onExport('tex'); close(); }}>alphaTex (.alphatex)</button>}
+              <button className="btn sm ghost" onClick={() => { onExport('print'); close(); }}>Print or save as PDF…</button>
+            </>
+          ) : (
+            <>
+              {canEdit && song.format === 'score' && <button className="btn sm ghost" onClick={() => { close(); onEdit(); }}>{Icon.edit({ size: 14 })} Edit tab</button>}
+              {song.format === 'score' && <button className="btn sm ghost" onClick={() => { close(); onRevisions(); }}>{Icon.history({ size: 14 })} Revisions{song.revisionCount ? ` (${song.revisionCount})` : ''}</button>}
+              <button className="btn sm ghost" onClick={() => setSub('playlist')}>{Icon.list({ size: 14 })} Add to playlist…</button>
+              <button className="btn sm ghost" onClick={() => setSub('export')}>{Icon.download({ size: 14 })} Export…</button>
+              {canEdit && <button className="btn sm ghost" onClick={async () => {
+                try {
+                  const link = await api.share(song.id);
+                  const url = `${location.origin}/#/s/${link.token}`;
+                  try { await navigator.clipboard.writeText(url); onToast('Share link copied. Anyone with it can view this tab.'); } catch { onToast(url); }
+                } catch (e) { onToast((e as Error).message); }
+                close();
+              }}>{Icon.share({ size: 14 })} Copy share link</button>}
+              <button className="btn sm ghost" onClick={async () => {
+                try { await pinOffline(song, !offline, prefs.offlineMb); setOffline(!offline); onToast(!offline ? 'Kept for offline use' : 'Removed from offline'); } catch (e) { onToast((e as Error).message); }
+              }}>{Icon.offline({ size: 14 })} {offline ? 'Remove from offline' : 'Keep offline'}</button>
+              {local && <span className="mono faint" style={{ fontSize: 11, wordBreak: 'break-all' }}>{song.source.ref}</span>}
+              {local && window.fretforgeDesktop && <button className="btn sm ghost" onClick={() => window.fretforgeDesktop!.showItemInFolder(song.source.ref)}>Show file in folder</button>}
+              {online && canEdit && <button className="btn sm ghost" onClick={async () => { try { await api.openOnline(song.source.kind as never, song.source.ref, true); onToast('Downloaded the latest version'); location.reload(); } catch (e) { onToast((e as Error).message); } }}>{Icon.refresh({ size: 14 })} Download again</button>}
+              {song.warnings?.length ? <details><summary className="muted" style={{ fontSize: 12 }}>{song.warnings.length} conversion note{song.warnings.length === 1 ? '' : 's'}</summary><ul style={{ fontSize: 12, paddingLeft: 16 }}>{song.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul></details> : null}
+              {canEdit && <button className="btn sm ghost danger" onClick={async () => {
+                const delFile = local && owner;
+                if (!(await askConfirm(delFile ? 'Delete this song’s file?' : 'Remove this song from the library?', { body: delFile ? 'The file is deleted from your library folder. This can’t be undone.' : 'You can add it again later.', ok: delFile ? 'Delete file' : 'Remove', danger: true }))) return;
+                await api.deleteSong(song.id, delFile);
+                go('/');
+              }}>{Icon.trash({ size: 14 })} {local && owner ? 'Delete…' : 'Remove from library'}</button>}
+            </>
           )}
         </div>
       )}
     </div>
   );
 }
-
