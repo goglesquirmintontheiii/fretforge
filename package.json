@@ -4,7 +4,12 @@
   "private": true,
   "type": "module",
   "description": "Self-hosted tab player, library and practice tool",
-  "workspaces": ["packages/shared", "packages/server", "packages/web", "packages/desktop"],
+  "workspaces": [
+    "packages/shared",
+    "packages/server",
+    "packages/web",
+    "packages/desktop"
+  ],
   "scripts": {
     "dev:server": "npm run dev -w @fretforge/server",
     "dev:web": "npm run dev -w @fretforge/web",
@@ -13,9 +18,12 @@
     "typecheck": "tsc -p packages/shared && tsc -p packages/server && tsc -p packages/web && tsc -p packages/desktop",
     "test": "vitest run",
     "smoke": "node scripts/smoke.mjs",
-    "start": "node packages/server/dist/main.js"
+    "start": "node packages/server/dist/main.js",
+    "build:engine": "bash packages/engine/build.sh"
   },
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "devDependencies": {
     "typescript": "7.0.2",
     "vitest": "5.0.5",
