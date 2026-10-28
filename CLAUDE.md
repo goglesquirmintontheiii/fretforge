@@ -7,8 +7,9 @@ Self-hosted tab player (Songsterr-style) with NAM amps/IRs on tab tracks, AI ste
 - `packages/server` – Fastify API (`routes/*.ts`) + JSON store (`db.json`, v2: users, per-user song state, playlists, comments, revisions, shares, rig files, audio, jobs) + watched library folder + AI job runner. Bundled with esbuild into one file.
 - `packages/web` – React + alphaTab. Hash routing (`#/song/:id`), no router library. `audio/` is the mix engine (AudioWorklet `mixer.worklet.ts`, amp worker pool, `forgeDsp.ts` WASM wrapper); `editor/` is the tab editor; `rig/` the Rig page.
 - `packages/engine` – forge-dsp in C++20: NAM interpreter (`nam.cpp`), zero-latency convolver, `Rig` chain, C API (`api.cpp`), Signalsmith Stretch (vendored). `build.sh` makes the WASM (committed at `packages/web/public/engine/forge-dsp.wasm`), the native test harness and the desktop's N-API addon (`native/addon.cpp`, JACK via dlopen).
-- `packages/desktop` – Electron. Runs the server in-process on 127.0.0.1 with a random token; online requests use Chromium's network (`session.fetch`), with a hidden-window fallback for bot checks. Loads `native/forge_native.node` for the low-latency rig.
-- `ai/` – Python worker (`fretforge_ai.py`): Demucs, alignment, yt-dlp, NAM training. JSON lines on stdout. Must fail with a message, never a traceback.
+- `packages/desktop` – Electron. Runs the server in-process on 127.0.0.1 with a random token; online requests use Chromium's network (`session.fetch`), with a short hidden-window load for client-rendered pages; bot checks open a visible window for the user (`verify`). Loads `native/forge_native.node` for the low-latency rig.
+- `ai/` – Python worker (`fretforge_ai.py`, `transcribe.py`): Demucs, alignment, yt-dlp, NAM training, transcription measurements (beats, notes, drums, lyrics). JSON lines on stdout. Must fail with a message, never a traceback. Optional models (basic_pitch, beat_this, whisper) must stay optional with a built-in fallback.
+- `packages/server/src/transcribe` – AI result → score: tempo map/grid (`tempo.ts`), fingering DP (`fingering.ts`), score builder (`build.ts`), simplified versions (`simplify.ts`).
 
 ## Rules
 - One score model: alphaTab. Library scores are GP7 (or the original file when alphaTab reads it directly). Don't add another tab format.
@@ -19,7 +20,9 @@ Self-hosted tab player (Songsterr-style) with NAM amps/IRs on tab tracks, AI ste
 - Mix mode: alphaTab runs in `PlayerMode.EnabledExternalMedia` and follows the engine; keep alphaTab's own speed at 1, loop off and `playbackRange` null in that mode (the engine does speed, loops, metronome, count-in).
 - NAM: the TS compiler emits weights in NeuralAmpModelerCore order. Any change to `nam.ts`/`nam.cpp` must keep `packages/engine/test` passing (reference outputs from NAM core).
 - Audio thread rules (native process callback and worklets): no allocations, locks or JS calls; models/IRs are built elsewhere and swapped through atomics.
-- Online providers must fail soft: return `{ results: [], error }`, never throw through search.
+- Online providers must fail soft: return `{ results: [], error }`, never throw through search. Never work around bot checks (no UA spoofing, no private app APIs): throw `BrowserCheckError` and let the user complete the check (desktop `verify`).
+- TONE3000: free-tier API only (OAuth select/load flows and the bounded lists), no `/tones/search`, no scraping, downloads only on request, always show attribution.
+- Private songs (AI tabs until shared) are visible only to `createdBy`; filter them in lists and song routes.
 - Permissions: owner > member > viewer. Check with `requireRole` in routes; personal state goes in `userSongs`, never on the song record.
 - Keep the player usable on a phone: no horizontal page scroll at 390px; everything works by keyboard.
 

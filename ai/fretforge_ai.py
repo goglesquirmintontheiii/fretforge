@@ -97,11 +97,18 @@ def cmd_setup(args):
     run_logged(torch_cmd, 0.1, 0.7)
     progress(0.7, "Installing Demucs, librosa and yt-dlp")
     run_logged(pip + ["demucs", "soundfile", "librosa", "yt-dlp", "numpy"], 0.7, 0.9)
-    progress(0.9, "Installing the NAM trainer")
+    progress(0.86, "Installing the NAM trainer")
     try:
-        run_logged(pip + ["neural-amp-modeler"], 0.9, 0.98)
+        run_logged(pip + ["neural-amp-modeler"], 0.86, 0.9)
     except subprocess.CalledProcessError:
-        progress(0.98, "The NAM trainer could not be installed; training captures will be unavailable")
+        progress(0.9, "The NAM trainer could not be installed; training captures will be unavailable")
+    # optional models that make AI tabs better; the built-in methods work without them
+    for pkgs, what, p0, p1 in ((["basic-pitch[onnx]"], "Basic Pitch (note detection)", 0.9, 0.94), (["faster-whisper"], "Whisper (lyrics)", 0.94, 0.97), (["beat_this @ https://github.com/CPJKU/beat_this/archive/main.zip"], "Beat This! (beats and downbeats)", 0.97, 0.99)):
+        progress(p0, f"Installing {what}")
+        try:
+            run_logged(pip + pkgs, p0, p1)
+        except subprocess.CalledProcessError:
+            progress(p1, f"{what} could not be installed; AI tabs use the built-in method instead")
     emit(result={"venv": venv})
 
 
