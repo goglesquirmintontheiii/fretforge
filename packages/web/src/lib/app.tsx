@@ -8,7 +8,7 @@ import { setRigQuality } from '../audio/engine';
 export type Route =
   | { name: 'library'; playlist?: string; view?: 'favorites' | 'mine' | 'offline' }
   | { name: 'search'; q: string }
-  | { name: 'song'; id: string; edit?: boolean }
+  | { name: 'song'; id: string; edit?: boolean; gig?: string }
   | { name: 'new' }
   | { name: 'ai'; audio?: string }
   | { name: 'rig'; tab: 'rigs' | 'library' | 'find' | 'train'; id?: string; type?: string }
@@ -23,7 +23,7 @@ export function parseRoute(hash: string): Route {
   const [path, query = ''] = h.split('?');
   const parts = path.split('/').filter(Boolean);
   const params = new URLSearchParams(query);
-  if (parts[0] === 'song' && parts[1]) return { name: 'song', id: parts[1], edit: params.get('edit') === '1' };
+  if (parts[0] === 'song' && parts[1]) return { name: 'song', id: parts[1], edit: params.get('edit') === '1', gig: params.get('gig') ?? undefined };
   if (parts[0] === 'search') return { name: 'search', q: params.get('q') ?? '' };
   if (parts[0] === 'settings') return { name: 'settings' };
   if (parts[0] === 'rig') {

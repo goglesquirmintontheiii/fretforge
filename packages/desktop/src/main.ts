@@ -190,6 +190,12 @@ interface NativeEngine {
   loadGraph(desc: Float32Array, nams: unknown[], irs: unknown[]): unknown;
   control(op: string, a: number, b?: number, c?: number): boolean;
   meters(): unknown; measureLatency(): unknown;
+  playerSource(slot: number, a: Int16Array | null, b: Int16Array | null, scale: number): boolean;
+  playerClicks(frames: Float64Array, accent: Uint8Array): boolean;
+  playerCmd(op: string, a: number, b: number, c: number, d: number): boolean;
+  playerState(): unknown;
+  record(on: boolean): boolean;
+  takeRecording(): unknown;
 }
 let native: NativeEngine | null | undefined;
 let nativeError = '';
@@ -216,6 +222,12 @@ ipcMain.handle('ff:engine:connect', (_e, ours: string, other: string, on: boolea
 ipcMain.handle('ff:engine:loadGraph', (_e, desc: Float32Array, nams: unknown[], irs: unknown[]) => { const n = nativeEngine(); if (!n) throw new Error(nativeError); return n.loadGraph(desc, nams, irs); });
 ipcMain.on('ff:engine:control', (_e, op: string, a: number, b?: number, c?: number) => { nativeEngine()?.control(op, a, b ?? 0, c ?? 0); });
 ipcMain.handle('ff:engine:meters', () => nativeEngine()?.meters() ?? { input: 0, output: 0, load: 0, xruns: 0, tunerHz: 0, blocks: [], states: [], midi: [] });
+ipcMain.handle('ff:engine:playerSource', (_e, slot: number, a: Int16Array | null, b: Int16Array | null, scale: number) => nativeEngine()?.playerSource(slot, a, b, scale) ?? false);
+ipcMain.handle('ff:engine:playerClicks', (_e, frames: Float64Array, accent: Uint8Array) => nativeEngine()?.playerClicks(frames, accent) ?? false);
+ipcMain.on('ff:engine:playerCmd', (_e, op: string, a = 0, b = 0, c = 0, d = 0) => { nativeEngine()?.playerCmd(op, a, b, c, d); });
+ipcMain.handle('ff:engine:playerState', () => nativeEngine()?.playerState() ?? { running: false });
+ipcMain.handle('ff:engine:record', (_e, on: boolean) => nativeEngine()?.record(on) ?? false);
+ipcMain.handle('ff:engine:takeRecording', () => nativeEngine()?.takeRecording() ?? null);
 ipcMain.handle('ff:engine:measureLatency', () => nativeEngine()?.measureLatency() ?? { roundTripMs: null, message: nativeError });
 
 // ------------------------------------------------------------------ embedded TONE3000

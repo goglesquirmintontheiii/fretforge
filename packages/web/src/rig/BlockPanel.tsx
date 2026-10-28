@@ -1,7 +1,7 @@
 // Editing the selected block (knobs, model and IR, on/off, trails, MIDI learn) or split.
 import { useMemo } from 'react';
 import {
-  BLOCK_BY_TYPE, blockState, CATEGORY_LABELS, formatParam, NAM_ROLES, paramToUnit, unitToParam,
+  BLOCK_BY_TYPE, blockState, captureDevices, CATEGORY_LABELS, formatParam, NAM_ROLES, paramToUnit, unitToParam,
   type NamRole, type ParamDef, type RigBlock, type RigDoc, type RigFile, type RigSplit,
 } from '@fretforge/shared';
 import { Knob } from '../components/Knob';
@@ -79,9 +79,13 @@ export function BlockPanel({ rig, block, files, allSnapshots, onAllSnapshots, on
           </div>
         </div>
       )}
+      {def.nam && <DeviceSetting value={block.nam ?? null} files={files} onChange={(id) => onFile('nam', 0, id)} />}
       {def.nam && <FilePick kind="nam" role={def.nam} value={block.nam ?? null} files={files} onChange={(id) => onFile('nam', 0, id)} />}
       {Array.from({ length: def.irSlots ?? 0 }, (_, s) => (
-        <FilePick key={s} kind="ir" label={def.irSlots! > 1 ? `IR ${'AB'[s]}` : undefined} value={block.ir?.[s] ?? null} files={files} onChange={(id) => onFile('ir', s, id)} />
+        <div key={s} style={{ display: 'grid', gap: 6 }}>
+        <DeviceSetting value={block.ir?.[s] ?? null} files={files} onChange={(id) => onFile('ir', s, id)} />
+        <FilePick kind="ir" label={def.irSlots! > 1 ? `IR ${'AB'[s]}` : undefined} value={block.ir?.[s] ?? null} files={files} onChange={(id) => onFile('ir', s, id)} />
+        </div>
       ))}
       {def.category === 'looper' ? <LooperControls block={block} state={m.states[live.blockIndex(block.uid) ?? -1] ?? 0} /> : null}
       <div className="faceplate">
@@ -142,6 +146,29 @@ function LooperControls({ block, state }: { block: RigBlock; state: number }) {
   );
 }
 
+/** a device with several captures: switch its setting like a knob position */
+function DeviceSetting({ value, files, onChange }: { value: string | null; files: RigFile[]; onChange(id: string): void }) {
+  const dev = useMemo(() => {
+    const cur = files.find((f) => f.id === value);
+    return cur?.device ? captureDevices(files).find((d) => d.files.some((f) => f.id === cur.id)) : undefined;
+  }, [files, value]);
+  if (!dev || dev.files.length < 2) return null;
+  return (
+    <div className="field">
+      <span>{dev.name} setting</span>
+      {dev.files.length <= 4 ? (
+        <div className="seg" role="radiogroup" aria-label={`${dev.name} setting`}>
+          {dev.files.map((f) => <button key={f.id} role="radio" aria-checked={f.id === value} onClick={() => onChange(f.id)}>{f.setting}</button>)}
+        </div>
+      ) : (
+        <select value={value ?? ''} onChange={(e) => onChange(e.target.value)} aria-label={`${dev.name} setting`}>
+          {dev.files.map((f) => <option key={f.id} value={f.id}>{f.setting}</option>)}
+        </select>
+      )}
+    </div>
+  );
+}
+
 function FilePick({ kind, role, label, value, files, onChange }: { kind: 'nam' | 'ir'; role?: NamRole; label?: string; value: string | null; files: RigFile[]; onChange(id: string | null): void }) {
   const { pick, busy } = useUpload(kind, role);
   const list = useMemo(() => files.filter((f) => f.kind === kind), [files, kind]);
@@ -156,7 +183,7 @@ function FilePick({ kind, role, label, value, files, onChange }: { kind: 'nam' |
       <div className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
         <select className="grow" value={value ?? ''} onChange={(e) => onChange(e.target.value || null)} aria-label={label ?? (kind === 'ir' ? 'Impulse response' : 'Model')}>
           <option value="">{kind === 'ir' ? 'No IR' : 'No model'}</option>
-          {groups.map((g) => <optgroup key={g.label} label={g.label}>{g.items.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}</optgroup>)}
+          {groups.map((g) => <optgroup key={g.label} label={g.label}>{g.items.map((f) => <option key={f.id} value={f.id}>{f.device ? `${f.device} · ${f.setting ?? f.name}` : f.name}</option>)}</optgroup>)}
         </select>
         <button className="btn sm" onClick={() => pick((added) => { const f = added.find((x) => x.kind === kind); if (f) onChange(f.id); })} disabled={busy} title="Add files (.nam, .wav or .zip)">{busy ? <span className="spinner" /> : Icon.upload({ size: 14 })}</button>
         <button className="btn sm" onClick={() => go(`/rig/find${kind === 'ir' ? '?type=ir' : role ? `?type=${role}` : ''}`)} title="Find models online">{Icon.search({ size: 14 })}</button>

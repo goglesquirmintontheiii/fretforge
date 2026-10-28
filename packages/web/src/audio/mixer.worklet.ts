@@ -8,6 +8,7 @@
 import { ForgeDsp, type ChainHandle } from './forgeDsp';
 
 declare const sampleRate: number;
+declare const currentTime: number;
 declare function registerProcessor(name: string, ctor: unknown): void;
 declare class AudioWorkletProcessor {
   readonly port: MessagePort;
@@ -266,7 +267,7 @@ class MixerProcessor extends AudioWorkletProcessor {
   private report(force = false) {
     if (!force && --this.reportIn > 0) return;
     this.reportIn = 6;
-    this.port.postMessage({ type: 'pos', ms: (this.heardFrames() / sampleRate) * 1000, playing: this.playing, counting: this.countLeft > 0, peak: this.peak });
+    this.port.postMessage({ type: 'pos', ms: (this.heardFrames() / sampleRate) * 1000, t: currentTime, playing: this.playing, counting: this.countLeft > 0, peak: this.peak });
     this.peak = 0;
   }
 
@@ -453,5 +454,48 @@ class RigProcessor extends AudioWorkletProcessor {
   }
 }
 
+// ------------------------------------------------------------------ taps (recording and the practice coach)
+// Inputs: 0 the dry guitar (DI), 1 the rig's output, 2 the song. Posts chunks of 2048 frames
+// with the context time of their first frame. While not recording, only the DI is sent.
+class TapProcessor extends AudioWorkletProcessor {
+  private n = 0;
+  private recording = false;
+  private on = true;
+  private t0 = 0;
+  private buf: Float32Array[] = [];
+  private readonly size = 2048;
+  constructor() {
+    super();
+    this.alloc();
+    this.port.onmessage = (e: MessageEvent<{ type: 'record' | 'enable'; on: boolean }>) => {
+      if (e.data.type === 'record') { this.recording = e.data.on; this.n = 0; }
+      else this.on = e.data.on;
+    };
+  }
+  private alloc() { this.buf = Array.from({ length: 5 }, () => new Float32Array(this.size)); }
+  process(inputs: Float32Array[][]): boolean {
+    if (!this.on) return true;
+    const di = inputs[0]?.[0], rig = inputs[1], song = inputs[2];
+    const len = di?.length ?? 128;
+    if (this.n === 0) this.t0 = currentTime;
+    const [d, rl, rr, sl, sr] = this.buf;
+    if (di) d.set(di, this.n); else d.fill(0, this.n, this.n + len);
+    if (this.recording) {
+      if (rig?.[0]) { rl.set(rig[0], this.n); rr.set(rig[1] ?? rig[0], this.n); } else { rl.fill(0, this.n, this.n + len); rr.fill(0, this.n, this.n + len); }
+      if (song?.[0]) { sl.set(song[0], this.n); sr.set(song[1] ?? song[0], this.n); } else { sl.fill(0, this.n, this.n + len); sr.fill(0, this.n, this.n + len); }
+    }
+    this.n += len;
+    if (this.n >= this.size) {
+      const msg = this.recording ? { type: 'chunk', t: this.t0, di: d, rigL: rl, rigR: rr, songL: sl, songR: sr } : { type: 'chunk', t: this.t0, di: d };
+      this.port.postMessage(msg, (this.recording ? [d, rl, rr, sl, sr] : [d]).map((x) => x.buffer));
+      // transferred buffers are gone: make new ones
+      if (this.recording) this.alloc(); else this.buf[0] = new Float32Array(this.size);
+      this.n = 0;
+    }
+    return true;
+  }
+}
+
 registerProcessor('ff-mixer', MixerProcessor);
+registerProcessor('ff-tap', TapProcessor);
 registerProcessor('ff-rig', RigProcessor);

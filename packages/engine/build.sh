@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 OUT_WASM=../web/public/engine/forge-dsp.wasm
-DSP="src/nam.cpp src/convolver.cpp src/rig.cpp src/chain.cpp src/blocks_drive.cpp src/blocks_dyn.cpp src/blocks_eq.cpp src/blocks_mod.cpp src/blocks_delay.cpp src/blocks_reverb.cpp src/blocks_pitch.cpp src/blocks_filter.cpp src/blocks_capture.cpp"
+DSP="src/player.cpp src/nam.cpp src/convolver.cpp src/rig.cpp src/chain.cpp src/blocks_drive.cpp src/blocks_dyn.cpp src/blocks_eq.cpp src/blocks_mod.cpp src/blocks_delay.cpp src/blocks_reverb.cpp src/blocks_pitch.cpp src/blocks_filter.cpp src/blocks_capture.cpp"
 SRC="src/alloc.cpp src/api.cpp $DSP"
 INC="-Isrc -Ivendor/signalsmith-stretch -Ivendor/signalsmith-linear/include"
 CXX=${CXX:-clang++}

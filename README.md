@@ -64,7 +64,32 @@ The audio engine is C++ in `packages/engine`; the built WASM is committed. Rebui
 bash packages/engine/build.sh all   # WASM, native test harness and the desktop's native addon
 ```
 
-## What's in 0.6.0
+## What's in 0.7.0
+
+**Play along with your rig**
+- **One audio clock** for the song, its stems and your live rig. While the live rig is on, the song plays from the same engine as your guitar: in the desktop app inside the JACK engine, in the browser on the same audio context. Speed, loops and pitch shift change the song, never your guitar.
+- **Main and headphone mixes:** set the song and rig levels for the main output, and a second mix on the desktop engine's `phones_L`/`phones_R` ports.
+- **Per-song live rig** with switches to other rigs or snapshots at bars or at every section marker ("At every section"), applied while the song plays.
+- **Gig mode:** play a playlist as a setlist. Each song brings its rig and backing track, Page Down / Page Up (what page-turner and MIDI foot pedals send) move between songs, and the next song loads when one ends.
+
+**Practice coach**
+- Listens to your dry guitar before the rig and checks each note of the tab: right note, wrong note or missed, with how early or late you were. **Wait mode** stops at each note until you play it. Every run is saved to the song's history.
+
+**Takes and re-amping**
+- **Record** the dry DI, the rig and the song together, from wherever playback is. Takes are private.
+- **Re-amp** a DI through any rig later, and **export** each part as WAV or a mix with the backing track as MP3 or WAV.
+
+**Tone match**
+- Compares the guitar stem of a song with your amp captures and cabs, ranks the pairings by how close their spectrum is and fits a parametric EQ to get closer. Save a match as a rig or use it as the song's live rig. A starting point, not a clone.
+
+**Captures**
+- **Automated capture training:** record your guitar until you press stop, Fretforge waits a moment, plays the recording out to your amp or pedal and records what comes back through the same input. The two are lined up and a NAM model is trained in the AI worker.
+- **Named gear:** give captures and IRs a device name and a setting ("My Klon", "Gain 2 o'clock"). Each device is one block in the blocks list, with a switch between its settings. Works for amps, pedals, cabs (IRs) and anything else.
+
+**Also**
+- If yt-dlp is missing, a button downloads it in one click (the official release, checked against its published checksum).
+
+## What was in 0.6.0
 
 0.6.0 bundles two phases of the plan: 0.5.0 (AI tabs) and 0.6.0 (the rig editor), plus the requests from 0.2.0.
 
@@ -130,6 +155,7 @@ These sites can change their APIs at any time. If a source stops working, search
 ```sh
 npm test                           # unit, API and engine tests (NAM output vs. NeuralAmpModelerCore fixtures)
 node scripts/smoke.mjs             # drives the built app in Chromium (needs `npm run build`)
+node scripts/smoke-gear.mjs        # named gear, tone match and gig mode in Chromium
 python -m unittest ai/test_ai.py   # AI worker DSP (needs numpy, soundfile, librosa)
 ```
 
@@ -137,4 +163,4 @@ Releases are built by `.github/workflows/release.yml`: engine build, tests, smok
 
 ## License
 
-MIT for Fretforge's own code. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for bundled components (alphaTab is MPL-2.0, the SONiVOX SoundFont is Apache-2.0, Bravura is OFL, Signalsmith Stretch is MIT).
+MIT for Fretforge's own code. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for bundled components (alphaTab is MPL-2.0, the SONiVOX SoundFont is Apache-2.0, Bravura is OFL, Signalsmith Stretch is MIT, lamejs for MP3 export is LGPL-3.0 and loaded as a separate module).

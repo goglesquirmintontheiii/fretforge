@@ -185,7 +185,7 @@ export class Store {
     const st = this.db.userSongs[userId]?.[s.id];
     const extra = {
       revisionCount: (this.db.revisions[s.id]?.length ?? 0) || undefined,
-      audioCount: this.audioFor(s.id).length || undefined,
+      audioCount: this.audioFor(s.id).filter((a) => a.kind !== 'take').length || undefined,
       commentCount: this.commentsFor(s.id).length || undefined,
     };
     return st ? { ...s, ...extra, favorite: st.favorite, practice: st.practice, lastOpenedAt: st.lastOpenedAt, openCount: st.openCount, offline: st.offline } : { ...s, ...extra };

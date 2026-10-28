@@ -27,6 +27,7 @@
 #include "chain.h"
 #include "convolver.h"
 #include "nam.h"
+#include "player.h"
 
 using namespace forge;
 
@@ -101,7 +102,31 @@ struct Engine {
   jack_port_t* outL = nullptr;
   jack_port_t* outR = nullptr;
   jack_port_t* midiIn = nullptr;
+  jack_port_t* phL = nullptr;
+  jack_port_t* phR = nullptr;
   Chain* chain = nullptr;
+  // the song plays in the same callback as the rig: one clock, nothing drifts
+  Player* player = nullptr;
+  float *rigL = nullptr, *rigR = nullptr, *songL = nullptr, *songR = nullptr;
+  // bus gains: 0 main song, 1 main rig, 2 phones song, 3 phones rig (targets; ramped per block)
+  std::atomic<float> bus[4] = { 1.f, 1.f, 1.f, 1.f };
+  float busCur[4] = { 1.f, 1.f, 1.f, 1.f };
+  int maxFrames = 8192;
+
+  // recording ring: DI (before the rig), rig L/R and song L/R, filled while armed
+  static constexpr int kRecFrames = 48000 * 8;
+  static constexpr int kRecCh = 5;
+  float* rec = nullptr; // kRecFrames * kRecCh, interleaved
+  std::atomic<bool> recArmed{ false };
+  std::atomic<uint64_t> recHead{ 0 }, recTail{ 0 };
+  std::atomic<uint32_t> recDropped{ 0 };
+  // one mark per callback: engine frame of the block start, song position, playing
+  static constexpr int kMarks = 4096;
+  struct Mark { uint64_t frame; double song; float rate; int playing; };
+  Mark marks[kMarks];
+  std::atomic<uint64_t> markHead{ 0 }, markTail{ 0 };
+  uint64_t frameCounter = 0;
+  std::atomic<float> songRate{ 1.f };
   float sampleRate = 48000;
   int bufferSize = 0;
   std::string name;
@@ -147,6 +172,7 @@ static int process(jack_nframes_t n, void* arg) {
   const int ls = e->latState.load(std::memory_order_acquire);
   if (ls == 1 || ls == 2) {
     for (jack_nframes_t i = 0; i < n; i++) { L[i] = 0; R[i] = 0; }
+    if (e->phL && e->phR) { float* a = static_cast<float*>(J.port_get_buffer(e->phL, n)); float* b = static_cast<float*>(J.port_get_buffer(e->phR, n)); for (jack_nframes_t i = 0; i < n; i++) a[i] = b[i] = 0; }
     if (ls == 1) { L[0] = R[0] = 0.8f; e->latCounter = 0; e->latState.store(2, std::memory_order_release); }
     for (jack_nframes_t i = 0; i < n; i++) {
       if (std::fabs(in[i]) > 0.25f && (ls == 2 || i > 0)) {
@@ -161,7 +187,46 @@ static int process(jack_nframes_t n, void* arg) {
   }
 
   const auto t0 = std::chrono::steady_clock::now();
-  e->chain->process(in, L, R, (int)n);
+  float* pL = e->phL ? static_cast<float*>(J.port_get_buffer(e->phL, n)) : nullptr;
+  float* pR = e->phR ? static_cast<float*>(J.port_get_buffer(e->phR, n)) : nullptr;
+  const int frames = std::min((int)n, e->maxFrames);
+  const double songPos = e->player->heardFrames();
+  const bool songPlaying = e->player->playing();
+  e->chain->process(in, e->rigL, e->rigR, frames);
+  e->player->render(e->songL, e->songR, frames);
+  // buses: main and headphones each get their own song and rig levels (ramped, no zipper)
+  float g0[4], d[4];
+  for (int k = 0; k < 4; k++) { const float t = e->bus[k].load(std::memory_order_relaxed); g0[k] = e->busCur[k]; d[k] = (t - g0[k]) / frames; e->busCur[k] = t; }
+  for (int i = 0; i < frames; i++) {
+    const float ms = g0[0] + d[0] * i, mr = g0[1] + d[1] * i;
+    L[i] = e->songL[i] * ms + e->rigL[i] * mr;
+    R[i] = e->songR[i] * ms + e->rigR[i] * mr;
+    if (pL && pR) {
+      const float hs = g0[2] + d[2] * i, hr = g0[3] + d[3] * i;
+      pL[i] = e->songL[i] * hs + e->rigL[i] * hr;
+      pR[i] = e->songR[i] * hs + e->rigR[i] * hr;
+    }
+  }
+  for (int i = frames; i < (int)n; i++) { L[i] = R[i] = 0; if (pL && pR) pL[i] = pR[i] = 0; }
+  if (e->recArmed.load(std::memory_order_acquire)) {
+    const uint64_t h = e->recHead.load(std::memory_order_relaxed);
+    if (h + frames - e->recTail.load(std::memory_order_acquire) > (uint64_t)Engine::kRecFrames) e->recDropped.fetch_add(frames, std::memory_order_relaxed);
+    else {
+      for (int i = 0; i < frames; i++) {
+        float* f = e->rec + ((h + i) % Engine::kRecFrames) * Engine::kRecCh;
+        f[0] = in[i]; f[1] = e->rigL[i]; f[2] = e->rigR[i]; f[3] = e->songL[i]; f[4] = e->songR[i];
+      }
+      e->recHead.store(h + frames, std::memory_order_release);
+    }
+  }
+  {
+    const uint64_t mh = e->markHead.load(std::memory_order_relaxed);
+    if (mh - e->markTail.load(std::memory_order_acquire) < (uint64_t)Engine::kMarks) {
+      e->marks[mh % Engine::kMarks] = Engine::Mark{ e->frameCounter, songPos, e->songRate.load(std::memory_order_relaxed), songPlaying ? 1 : 0 };
+      e->markHead.store(mh + 1, std::memory_order_release);
+    }
+  }
+  e->frameCounter += n;
   const double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   const float l = (float)(dt / (n / e->sampleRate));
   e->load.store(std::max(l, e->load.load(std::memory_order_relaxed) * 0.97f), std::memory_order_relaxed);
@@ -171,7 +236,10 @@ static int process(jack_nframes_t n, void* arg) {
 static int onXrun(void* arg) { static_cast<Engine*>(arg)->xruns.fetch_add(1); return 0; }
 static void onShutdown(void* arg) { static_cast<Engine*>(arg)->shutdown.store(true); }
 
-static void collect(Engine* e) { if (e && e->chain) while (Graph* g = e->chain->collect()) delete g; }
+static void collect(Engine* e) {
+  if (e && e->chain) while (Graph* g = e->chain->collect()) delete g;
+  if (e && e->player) e->player->collect();
+}
 
 // ------------------------------------------------------------------ N-API helpers
 #define NAPI(call) do { if ((call) != napi_ok) { napi_throw_error(env, nullptr, "forge-native: N-API call failed"); return nullptr; } } while (0)
@@ -250,6 +318,8 @@ static const char* portFor(const std::string& which) {
   if (which == "out_L") return J.port_name(E->outL);
   if (which == "out_R") return J.port_name(E->outR);
   if (which == "midi_in" && E->midiIn) return J.port_name(E->midiIn);
+  if (which == "phones_L" && E->phL) return J.port_name(E->phL);
+  if (which == "phones_R" && E->phR) return J.port_name(E->phR);
   return nullptr;
 }
 
@@ -284,6 +354,8 @@ static void stopEngine() {
   }
   collect(E);
   delete E->chain;
+  delete E->player;
+  std::free(E->rigL); std::free(E->rigR); std::free(E->songL); std::free(E->songR); std::free(E->rec);
   delete E;
   E = nullptr;
 }
@@ -327,10 +399,16 @@ static napi_value Start(napi_env env, napi_callback_info info) {
   E->sampleRate = (float)J.get_sample_rate(c);
   E->bufferSize = (int)J.get_buffer_size(c);
   E->chain = new Chain(E->sampleRate, 2048);
+  E->player = new Player(E->sampleRate, E->maxFrames);
+  for (float** b : { &E->rigL, &E->rigR, &E->songL, &E->songR }) *b = (float*)std::calloc(E->maxFrames, sizeof(float));
+  E->rec = (float*)std::calloc((size_t)Engine::kRecFrames * Engine::kRecCh, sizeof(float));
   E->in = J.port_register(c, "in", AUDIO_TYPE, JackPortIsInput, 0);
   E->outL = J.port_register(c, "out_L", AUDIO_TYPE, JackPortIsOutput, 0);
   E->outR = J.port_register(c, "out_R", AUDIO_TYPE, JackPortIsOutput, 0);
   E->midiIn = J.port_register(c, "midi_in", MIDI_TYPE, JackPortIsInput, 0);
+  // a second stereo output with its own mix, for headphones (connect it in the I/O panel or a patchbay)
+  E->phL = J.port_register(c, "phones_L", AUDIO_TYPE, JackPortIsOutput, 0);
+  E->phR = J.port_register(c, "phones_R", AUDIO_TYPE, JackPortIsOutput, 0);
   if (!E->in || !E->outL || !E->outR) { stopEngine(); napi_throw_error(env, nullptr, "Could not create JACK ports."); return nullptr; }
   J.set_process_callback(c, process, E);
   J.set_xrun_callback(c, onXrun, E);
@@ -369,7 +447,7 @@ static napi_value Connections(napi_env env, napi_callback_info) {
   napi_value o;
   napi_create_object(env, &o);
   if (!E || !E->client) return o;
-  const std::pair<const char*, jack_port_t*> ports[] = { { "in", E->in }, { "out_L", E->outL }, { "out_R", E->outR }, { "midi_in", E->midiIn } };
+  const std::pair<const char*, jack_port_t*> ports[] = { { "in", E->in }, { "out_L", E->outL }, { "out_R", E->outR }, { "midi_in", E->midiIn }, { "phones_L", E->phL }, { "phones_R", E->phR } };
   for (auto& p : ports) {
     if (!p.second) continue;
     const char** c = J.port_get_connections(p.second);
@@ -475,6 +553,7 @@ static napi_value Control(napi_env env, napi_callback_info info) {
   else if (op == "tempo") E->chain->setTempo((float)a);
   else if (op == "quality") E->chain->setQuality((int)a);
   else if (op == "io") E->chain->setIo((int)a, (float)b);
+  else if (op == "bus") { if (a >= 0 && a < 4) E->bus[(int)a].store((float)std::max(0.0, std::min(4.0, b)), std::memory_order_relaxed); }
   else return boolean(env, false);
   return boolean(env, true);
 }
@@ -537,6 +616,152 @@ static napi_value MeasureLatency(napi_env env, napi_callback_info) {
   return o;
 }
 
+
+// ------------------------------------------------------------------ song player
+static Player* P(napi_env env) {
+  if (!E || !E->player) { napi_throw_error(env, nullptr, "The engine is not running."); return nullptr; }
+  return E->player;
+}
+
+// playerSource(slot, ch0: Int16Array, ch1?: Int16Array | null, scale?: number)
+static napi_value PlayerSourceFn(napi_env env, napi_callback_info info) {
+  size_t argc = 4;
+  napi_value argv[4];
+  NAPI(napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr));
+  Player* p = P(env);
+  if (!p) return nullptr;
+  int32_t slot = -1;
+  napi_get_value_int32(env, argv[0], &slot);
+  int16_t* a; size_t na = 0;
+  if (argc < 2 || !typed(env, argv[1], napi_int16_array, &a, &na)) { p->removeSource(slot); return boolean(env, true); }
+  auto* s = new PlayerSource();
+  s->length = (int)na;
+  s->ch[0] = (int16_t*)std::malloc(std::max<size_t>(1, na) * 2);
+  std::memcpy(s->ch[0], a, na * 2);
+  int16_t* b; size_t nb = 0;
+  if (argc > 2 && typed(env, argv[2], napi_int16_array, &b, &nb) && nb == na) {
+    s->ch[1] = (int16_t*)std::malloc(std::max<size_t>(1, nb) * 2);
+    std::memcpy(s->ch[1], b, nb * 2);
+  } else s->ch[1] = s->ch[0];
+  if (argc > 3) { double sc = 0; napi_get_value_double(env, argv[3], &sc); if (sc > 0) s->scale = (float)sc; }
+  p->setSource(slot, s);
+  return boolean(env, true);
+}
+
+// playerClicks(frames: Float64Array, accent: Uint8Array)
+static napi_value PlayerClicksFn(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  NAPI(napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr));
+  Player* p = P(env);
+  if (!p) return nullptr;
+  double* f; size_t nf = 0;
+  uint8_t* acc; size_t nacc = 0;
+  if (argc < 2 || !typed(env, argv[0], napi_float64_array, &f, &nf) || !typed(env, argv[1], napi_uint8_array, &acc, &nacc)) return boolean(env, false);
+  auto* c = new PlayerClicks();
+  c->count = (int)std::min(nf, nacc);
+  c->frames = (double*)std::malloc(std::max<size_t>(1, c->count) * sizeof(double));
+  c->accent = (uint8_t*)std::malloc(std::max<size_t>(1, c->count));
+  std::memcpy(c->frames, f, c->count * sizeof(double));
+  std::memcpy(c->accent, acc, c->count);
+  p->setClicks(c);
+  return boolean(env, true);
+}
+
+// playerCmd(op, a, b, c, d)
+static napi_value PlayerCmdFn(napi_env env, napi_callback_info info) {
+  size_t argc = 5;
+  napi_value argv[5];
+  NAPI(napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr));
+  if (!E || !E->player || argc < 1) return boolean(env, false);
+  Player* p = E->player;
+  const std::string op = getString(env, argv[0]);
+  double v[4] = { 0, 0, 0, 0 };
+  for (size_t i = 1; i < argc && i < 5; i++) v[i - 1] = arg(env, argv[i]);
+  for (double x : v) if (!std::isfinite(x)) return boolean(env, false);
+  if (op == "mix") p->mix((int)v[0], (float)v[1], (float)v[2], ((int)v[3] & 1) != 0, ((int)v[3] & 2) != 0);
+  else if (op == "offset") p->setOffset((int)v[0], v[1]);
+  else if (op == "play") p->play((int)v[0], v[1]);
+  else if (op == "pause") p->pause();
+  else if (op == "seek") p->seek(v[0]);
+  else if (op == "rate") { p->setRate((float)v[0]); E->songRate.store((float)v[0]); }
+  else if (op == "pitch") p->setPitch((float)v[0]);
+  else if (op == "master") p->setMaster((float)v[0]);
+  else if (op == "duration") p->setDuration(v[0]);
+  else if (op == "loop") p->setLoop(v[0], v[1]);
+  else if (op == "metronome") p->setMetronome(v[0] > 0.5, (float)v[1]);
+  else if (op == "clear") { for (int s = 0; s < Player::kSlots; s++) p->removeSource(s); }
+  else return boolean(env, false);
+  return boolean(env, true);
+}
+
+// playerState() -> { frames, playing, counting, ended, peak, sampleRate, latency }
+static napi_value PlayerStateFn(napi_env env, napi_callback_info) {
+  napi_value o;
+  napi_create_object(env, &o);
+  if (!E || !E->player) { set(env, o, "running", boolean(env, false)); return o; }
+  collect(E);
+  set(env, o, "running", boolean(env, true));
+  set(env, o, "frames", num(env, E->player->heardFrames()));
+  set(env, o, "playing", boolean(env, E->player->playing()));
+  set(env, o, "counting", boolean(env, E->player->counting()));
+  set(env, o, "ended", num(env, E->player->endedCount()));
+  set(env, o, "peak", num(env, E->player->takePeak()));
+  set(env, o, "sampleRate", num(env, E->sampleRate));
+  set(env, o, "latency", num(env, E->player->latency()));
+  return o;
+}
+
+// ------------------------------------------------------------------ recording (DI, rig, song)
+// record(on): arms or disarms; arming clears what was not taken yet
+static napi_value RecordFn(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  NAPI(napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr));
+  if (!E) return boolean(env, false);
+  bool on = false;
+  if (argc > 0) napi_get_value_bool(env, argv[0], &on);
+  if (on) { E->recTail.store(E->recHead.load()); E->recDropped.store(0); E->markTail.store(E->markHead.load()); }
+  E->recArmed.store(on, std::memory_order_release);
+  return boolean(env, true);
+}
+
+// takeRecording() -> { di, rigL, rigR, songL, songR: Float32Array, dropped, marks: Float64Array [frame, song, rate, playing]*, startFrame }
+static napi_value TakeRecordingFn(napi_env env, napi_callback_info) {
+  napi_value o;
+  napi_create_object(env, &o);
+  if (!E) return o;
+  const uint64_t h = E->recHead.load(std::memory_order_acquire), t = E->recTail.load(std::memory_order_relaxed);
+  const size_t n = (size_t)(h - t);
+  const char* names[] = { "di", "rigL", "rigR", "songL", "songR" };
+  for (int c = 0; c < Engine::kRecCh; c++) {
+    napi_value ab, arr;
+    void* data = nullptr;
+    napi_create_arraybuffer(env, n * sizeof(float), &data, &ab);
+    float* f = static_cast<float*>(data);
+    for (size_t i = 0; i < n; i++) f[i] = E->rec[((t + i) % Engine::kRecFrames) * Engine::kRecCh + c];
+    napi_create_typedarray(env, napi_float32_array, n, ab, 0, &arr);
+    set(env, o, names[c], arr);
+  }
+  E->recTail.store(h, std::memory_order_release);
+  set(env, o, "dropped", num(env, E->recDropped.exchange(0)));
+  const uint64_t mh = E->markHead.load(std::memory_order_acquire), mt = E->markTail.load(std::memory_order_relaxed);
+  const size_t nm = (size_t)(mh - mt);
+  napi_value mab, marr;
+  void* md = nullptr;
+  napi_create_arraybuffer(env, nm * 4 * sizeof(double), &md, &mab);
+  double* m = static_cast<double*>(md);
+  for (size_t i = 0; i < nm; i++) {
+    const Engine::Mark& k = E->marks[(mt + i) % Engine::kMarks];
+    m[i * 4] = (double)k.frame; m[i * 4 + 1] = k.song; m[i * 4 + 2] = k.rate; m[i * 4 + 3] = k.playing;
+  }
+  E->markTail.store(mh, std::memory_order_release);
+  napi_create_typedarray(env, napi_float64_array, nm * 4, mab, 0, &marr);
+  set(env, o, "marks", marr);
+  set(env, o, "sampleRate", num(env, E->sampleRate));
+  return o;
+}
+
 static napi_value Init(napi_env env, napi_value exports) {
   napi_property_descriptor props[] = {
     { "status", nullptr, Status, nullptr, nullptr, nullptr, napi_default, nullptr },
@@ -549,6 +774,12 @@ static napi_value Init(napi_env env, napi_value exports) {
     { "control", nullptr, Control, nullptr, nullptr, nullptr, napi_default, nullptr },
     { "meters", nullptr, Meters, nullptr, nullptr, nullptr, napi_default, nullptr },
     { "measureLatency", nullptr, MeasureLatency, nullptr, nullptr, nullptr, napi_default, nullptr },
+    { "playerSource", nullptr, PlayerSourceFn, nullptr, nullptr, nullptr, napi_default, nullptr },
+    { "playerClicks", nullptr, PlayerClicksFn, nullptr, nullptr, nullptr, napi_default, nullptr },
+    { "playerCmd", nullptr, PlayerCmdFn, nullptr, nullptr, nullptr, napi_default, nullptr },
+    { "playerState", nullptr, PlayerStateFn, nullptr, nullptr, nullptr, napi_default, nullptr },
+    { "record", nullptr, RecordFn, nullptr, nullptr, nullptr, napi_default, nullptr },
+    { "takeRecording", nullptr, TakeRecordingFn, nullptr, nullptr, nullptr, napi_default, nullptr },
   };
   napi_define_properties(env, exports, sizeof(props) / sizeof(props[0]), props);
   return exports;

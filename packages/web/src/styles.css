@@ -619,3 +619,62 @@ kbd { font: 600 10px/1 var(--mono, monospace); padding: 3px 5px; border-radius: 
 .aipanel .bar i { display: block; height: 100%; background: var(--good) }
 .simpl { display: flex; gap: 10px; align-items: flex-start; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer }
 .simpl.on { border-color: var(--accent); background: var(--accent-soft) }
+.ytdlp-missing { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 9px 12px; border-radius: 10px; background: var(--info-soft); color: var(--fg); font-size: 13px }
+.ytdlp-missing > span:first-child { flex: 1 1 200px }
+
+/* ---------- play along */
+.side-tabs { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent) }
+.side-tabs:hover, .side-tabs:focus-within { mask-image: none }
+.side { grid-auto-rows: max-content }
+.side-tabs button { flex: 1 0 auto; padding-left: 10px; padding-right: 10px }
+.pa-card { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--sunk) }
+.pa-card .nm { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.pa-meter { height: 4px; border-radius: 3px; background: var(--panel); overflow: hidden }
+.pa-meter i { display: block; height: 100%; background: var(--good); transition: width .07s linear }
+.pa-pending { display: grid; gap: 6px; padding: 8px; border-radius: 10px; border: 1px dashed var(--accent) }
+.recdot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #e5484d }
+.btn.danger .recdot { animation: ff-blink 1s steps(2) infinite; background: #fff }
+@keyframes ff-blink { 50% { opacity: .2 } }
+.asset.take { padding: 8px 10px }
+.takehead { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; background: none; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; padding: 0 }
+.takepart { display: grid; gap: 2px }
+.takepart audio { width: 100%; height: 32px }
+.coachdot { position: absolute; width: 8px; height: 8px; border-radius: 50%; pointer-events: none; background: #8a8f99 }
+.coachdot.hit { background: #2fb36b }
+.coachdot.wrong { background: #e5484d }
+.coach-wait { padding: 8px 10px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); font-weight: 600; font-size: 13px; animation: ff-blink 1.2s steps(2) infinite }
+.coach-big { display: flex; align-items: baseline; gap: 8px }
+.coach-big b { font-size: 34px; line-height: 1; font-variant-numeric: tabular-nums }
+.coach-big span { color: var(--dim) }
+.coach-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; font-size: 13px; color: var(--dim) }
+.coach-grid b { color: var(--fg); font-variant-numeric: tabular-nums }
+.coach-grid b.ok { color: #2fb36b }
+.coach-grid b.bad { color: #e5484d }
+.coach-history { display: grid; gap: 6px }
+.coach-bar { flex: 1; height: 6px; border-radius: 4px; background: var(--panel); overflow: hidden; max-width: 90px }
+.coach-bar i { display: block; height: 100%; background: var(--good) }
+.capsteps { margin: 0; padding-left: 20px; display: grid; gap: 4px; color: var(--dim); font-size: 13px }
+.capsteps li.on { color: var(--fg); font-weight: 600 }
+.capsteps li.done { color: var(--faint); text-decoration: line-through }
+.capmeter { flex: 1 1 120px; max-width: 220px; height: 8px; border-radius: 5px; background: var(--sunk); overflow: hidden }
+.capmeter i { display: block; height: 100%; background: var(--good); transition: width .1s linear }
+.capmeter i.clip { background: var(--bad) }
+.capwait { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 12px; border-radius: 10px; background: var(--accent-soft) }
+.devicebar { padding: 8px 10px; border-radius: 10px; background: var(--accent-soft) }
+.rigfile .kind.pick { display: inline-flex; align-items: center; gap: 4px; cursor: pointer }
+.blibitem.gear .sub { font-size: 10px; color: var(--faint); display: block }
+
+/* ---------- gig mode (0.7) */
+.gigbar { flex: 1 1 100%; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 10px; margin: 0 -2px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 10%, var(--panel)); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)) }
+.gigbar .gigpos { flex: 1 1 140px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px }
+.gigbar .gignext { max-width: 46vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.gigbar .btn.sm svg + span { margin-left: 4px }
+
+/* ---------- tone match (0.7) */
+.tm-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px }
+.tm-list li { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel) }
+.tm-list li .nm { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-size: 14px }
+.tm-pct { flex: none; min-width: 46px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; padding: 4px 6px; border-radius: 8px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent) }
+.tm-busy { display: grid; gap: 4px }
+.warnline { color: var(--warn, #e0a030) }
+.field > .seg { justify-self: start; max-width: 100%; flex-wrap: wrap }

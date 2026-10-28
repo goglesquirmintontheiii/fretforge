@@ -32,7 +32,7 @@ export interface ServerConfig {
   jobsPaused?: boolean;
 }
 
-export const VERSION = '0.6.0';
+export const VERSION = '0.7.0';
 
 export function configFromEnv(): ServerConfig {
   const dataDir = resolve(process.env.FRETFORGE_DATA || join(homedir(), '.local', 'share', 'fretforge'));

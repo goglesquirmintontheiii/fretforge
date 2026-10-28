@@ -1,7 +1,7 @@
 // The block palette: categories, search, and your captures by role. Drag a block onto the
 // canvas, or tap it to insert at the chosen slot.
 import { useMemo, useState } from 'react';
-import { CATEGORY_LABELS, CATEGORY_ORDER, RIG_BLOCKS, type BlockCategory, type RigFile } from '@fretforge/shared';
+import { CATEGORY_LABELS, CATEGORY_ORDER, RIG_BLOCKS, captureDevices, type BlockCategory, type RigFile } from '@fretforge/shared';
 import { CAT_COLOR, CatGlyph } from './blockArt';
 import { startDrag } from './ChainCanvas';
 import type { Slot } from './rigOps';
@@ -11,8 +11,8 @@ const ROLE_BLOCK: Record<string, number> = { amp: 100, preamp: 101, pedal: 102, 
 export function BlockLibrary({ files, onAdd, onDropAt, liveOnlyOk }: {
   files: RigFile[];
   /** tap: insert at the chosen slot (or the end) */
-  onAdd(type: number, extra?: { nam?: string; ir?: string }): void;
-  onDropAt(type: number, slot: Slot, extra?: { nam?: string; ir?: string }): void;
+  onAdd(type: number, extra?: { nam?: string; ir?: string; label?: string }): void;
+  onDropAt(type: number, slot: Slot, extra?: { nam?: string; ir?: string; label?: string }): void;
   liveOnlyOk: boolean;
 }) {
   const [q, setQ] = useState('');
@@ -23,6 +23,12 @@ export function BlockLibrary({ files, onAdd, onDropAt, liveOnlyOk }: {
   const captures = useMemo(() => files.filter((f) => (cat === 'all' || cat === 'captures' || (f.kind === 'ir' ? cat === 'cab' : ROLE_BLOCK[f.role ?? 'amp'] && blockCat(f) === cat))
     && (!words.length || words.every((w) => `${f.name} ${f.gearMake ?? ''} ${f.gearModel ?? ''} ${f.tags.join(' ')} ${f.role ?? ''}`.toLowerCase().includes(w)))), [files, cat, q]); // eslint-disable-line react-hooks/exhaustive-deps
   const groups = CATEGORY_ORDER.map((c) => ({ c, items: blocks.filter((b) => b.category === c) })).filter((g) => g.items.length);
+  // your named gear: one block per device, its captures are the settings
+  const devices = useMemo(() => captureDevices(files).filter((d) => {
+    const c = deviceCat(d);
+    return (cat === 'all' || cat === 'captures' || cat === c) && (!words.length || words.every((w) => `${d.name} ${d.role} ${d.files.map((f) => f.setting).join(' ')}`.toLowerCase().includes(w)));
+  }), [files, cat, q]); // eslint-disable-line react-hooks/exhaustive-deps
+  const inDevice = useMemo(() => new Set(captureDevices(files).flatMap((d) => d.files.map((f) => f.id))), [files]);
   return (
     <div className="blib">
       <input type="search" placeholder="Search blocks and captures" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search blocks" id="block-search" />
@@ -31,6 +37,28 @@ export function BlockLibrary({ files, onAdd, onDropAt, liveOnlyOk }: {
         <button className="chip" aria-pressed={cat === 'captures'} onClick={() => setCat('captures')}>My captures</button>
         {CATEGORY_ORDER.map((c) => <button key={c} className="chip" aria-pressed={cat === c} onClick={() => setCat(c)} style={{ ['--cat' as string]: CAT_COLOR[c] }}><i className="catdot" />{CATEGORY_LABELS[c]}</button>)}
       </div>
+      {devices.length > 0 && (
+        <section>
+          <h4>Your gear</h4>
+          <div className="blibgrid">
+            {devices.map((d) => {
+              const type = d.kind === 'ir' ? 105 : ROLE_BLOCK[d.role] ?? 100;
+              const c = deviceCat(d);
+              const extra = d.kind === 'ir' ? { ir: d.files[0].id, label: d.name } : { nam: d.files[0].id, label: d.name };
+              return (
+                <button key={d.key} className="blibitem gear" style={{ ['--cat' as string]: CAT_COLOR[c] }}
+                  title={`${d.name}: ${d.files.length} setting${d.files.length === 1 ? '' : 's'} (${d.files.map((f) => f.setting).join(', ')})`}
+                  onPointerDown={(e) => startDrag(e, { kind: 'new', type }, d.name, CAT_COLOR[c], (slot) => onDropAt(type, slot, extra), () => onAdd(type, extra))}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onAdd(type, extra); } }}>
+                  <span className="glyph"><CatGlyph cat={c} /></span>
+                  <span className="nm">{d.name}</span>
+                  <span className="sub">{d.kind === 'ir' ? 'Cab IR' : roleLabel(d.role as RigFile['role'])}{d.files.length > 1 ? ` · ${d.files.length} settings` : ''}</span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
       {cat !== 'captures' && groups.map((g) => (
         <section key={g.c}>
           <h4>{CATEGORY_LABELS[g.c]}</h4>
@@ -46,11 +74,11 @@ export function BlockLibrary({ files, onAdd, onDropAt, liveOnlyOk }: {
           </div>
         </section>
       ))}
-      {captures.length > 0 && (cat === 'all' || cat === 'captures' || ['amp', 'preamp', 'cab', 'capture'].includes(cat)) && (
+      {captures.some((f) => !inDevice.has(f.id)) && (cat === 'all' || cat === 'captures' || ['amp', 'preamp', 'cab', 'capture'].includes(cat)) && (
         <section>
           <h4>Your captures and IRs</h4>
           <div className="blibcaps">
-            {captures.slice(0, 200).map((f) => {
+            {captures.filter((f) => !inDevice.has(f.id)).slice(0, 200).map((f) => {
               const type = f.kind === 'ir' ? 105 : ROLE_BLOCK[f.role ?? 'amp'] ?? 100;
               const extra = f.kind === 'ir' ? { ir: f.id } : { nam: f.id };
               const c = blockCat(f);
@@ -67,7 +95,7 @@ export function BlockLibrary({ files, onAdd, onDropAt, liveOnlyOk }: {
           </div>
         </section>
       )}
-      {!groups.length && !captures.length && <p className="muted">Nothing matches.</p>}
+      {!groups.length && !captures.length && !devices.length && <p className="muted">Nothing matches.</p>}
     </div>
   );
 }
@@ -84,4 +112,8 @@ function blockCat(f: RigFile): BlockCategory {
 
 export function roleLabel(r: RigFile['role']): string {
   return r === 'full-rig' ? 'Full rig' : r ? r[0].toUpperCase() + r.slice(1) : 'Amp';
+}
+
+function deviceCat(d: { kind: 'nam' | 'ir'; role: string }): BlockCategory {
+  return blockCat((d.kind === 'ir' ? { kind: 'ir' } : { kind: 'nam', role: d.role }) as RigFile);
 }

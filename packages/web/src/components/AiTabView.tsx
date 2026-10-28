@@ -2,7 +2,8 @@
 // Separation, beats, notes and lyrics run in the local AI worker; the result opens in the editor.
 import { useEffect, useRef, useState } from 'react';
 import { AI_INSTRUMENTS, TUNING_CATALOG, type AiInstrument, type Job, type TranscribeOptions } from '@fretforge/shared';
-import { api } from '../api';
+import { api, type ApiError } from '../api';
+import { YtdlpInstall } from './YtdlpInstall';
 import { go, useApp } from '../lib/app';
 import { JobRow, useJobs } from '../player/AudioPanel';
 import { Icon } from './icons';
@@ -30,6 +31,7 @@ export function AiTabView({ audioId }: { audioId?: string }) {
   const [lyrics, setLyrics] = useState(true);
   const [priv, setPriv] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [ytCheck, setYtCheck] = useState(0);
   const [mine, setMine] = useState<string[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -69,7 +71,8 @@ export function AiTabView({ audioId }: { audioId?: string }) {
       refresh();
       toast('Transcribing in the background. You can leave this page.');
     } catch (err) {
-      toast((err as Error).message);
+      if ((err as ApiError).code === 'ff-ytdlp-missing') setYtCheck((n) => n + 1);
+      else toast((err as Error).message);
     } finally {
       setBusy(false);
     }
@@ -98,7 +101,10 @@ export function AiTabView({ audioId }: { audioId?: string }) {
               <input ref={fileRef} type="file" hidden accept=".flac,.wav,.mp3,.m4a,.aac,.ogg,.oga,.opus,.webm,audio/*" onChange={(e) => { const f = e.target.files?.[0] ?? null; setFile(f); if (f && !title) setTitle(f.name.replace(/\.[^.]+$/, '')); e.target.value = ''; }} />
             </div>
           ) : (
-            <label className="field"><span>YouTube link</span><input type="url" id="ai-url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://www.youtube.com/watch?v=…" /></label>
+            <>
+              <label className="field"><span>YouTube link</span><input type="url" id="ai-url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://www.youtube.com/watch?v=…" /></label>
+              <YtdlpInstall recheck={ytCheck} />
+            </>
           )}
         <div className="row">
           <label className="field grow"><span>Title</span><input type="text" id="ai-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="From the file or video" /></label>

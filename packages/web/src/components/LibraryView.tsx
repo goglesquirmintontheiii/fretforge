@@ -1,3 +1,4 @@
+import { gigLink } from '../player/GigBar';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Instrument, Playlist, SongRecord } from '@fretforge/shared';
 import { GUITAR_TONES, INSTRUMENT_LABELS, STRING_FAMILIES, TUNING_CATALOG } from '@fretforge/shared';
@@ -187,6 +188,10 @@ export function LibraryView({ playlist, view }: { playlist?: string; view?: 'fav
           <h2>{title}</h2>
           <span className="muted">{pl ? `${pl.songIds.length} song${pl.songIds.length === 1 ? '' : 's'}${pl.ownerName && pl.ownerId !== user?.id ? ` · by ${pl.ownerName}` : ''}` : `${songs?.length ?? 0} of ${total} song${total === 1 ? '' : 's'}`}{status?.scanning ? ' · scanning your folder…' : ''}</span>
           <span className="grow" />
+          {pl && (songs?.length ?? 0) > 0 && (
+            <button className="btn sm primary" id="gig-start" title="Play this playlist as a setlist: each song with its rig preset and backing track, Page Down for the next song"
+              onClick={() => { const first = pl.songIds.find((id) => songs?.some((s) => s.id === id)); if (first) go(gigLink(pl.id, first)); }}>{Icon.play({ size: 14 })} Gig mode</button>
+          )}
           {pl && (pl.ownerId === user?.id || user?.role === 'owner') && (
             <>
               <label className="row" style={{ gap: 6, fontSize: 13 }}><input type="checkbox" checked={pl.shared} onChange={async (e) => { await api.patchPlaylist(pl.id, { shared: e.target.checked }); reloadPlaylists(); }} /> Shared with everyone</label>

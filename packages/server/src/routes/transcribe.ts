@@ -13,6 +13,7 @@ import { buildScore } from '../transcribe/build';
 import type { AiResult } from '../transcribe/types';
 import { simplify, SIMPLIFY_KINDS, type SimplifyKind } from '../transcribe/simplify';
 import { youtubeId } from '../videos';
+import { requireYtdlp } from '../ytdlp';
 
 const AUDIO_EXT = new Set(['.flac', '.wav', '.mp3', '.m4a', '.aac', '.ogg', '.oga', '.opus', '.webm']);
 const MIME: Record<string, string> = { '.flac': 'audio/flac', '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.oga': 'audio/ogg', '.opus': 'audio/ogg', '.webm': 'audio/webm' };
@@ -92,6 +93,7 @@ export function registerTranscribe(app: FastifyInstance, ctx: Ctx) {
       return queue({ input: join(cfg.dataDir, a.file) }, o, `AI tab: “${o.title}”`, u.id);
     }
     if (!b.url || !youtubeId(b.url)) throw httpError(400, 'Paste a YouTube link or add a recording.');
+    requireYtdlp(jobs);
     return queue({ url: b.url }, o, `AI tab from YouTube${o.title ? `: “${o.title}”` : ''}`, u.id);
   });
 

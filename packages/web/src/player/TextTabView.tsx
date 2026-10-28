@@ -9,7 +9,7 @@ import { Tuner } from './Tuner';
 import { useWakeLock } from '../lib/wakeLock';
 
 /** Ultimate Guitar chord sheets and text tabs: transpose, capo, chord shapes, auto-scroll. */
-export function TextTabView({ song, onClose, onPatch, loadText, readOnly }: { song: SongRecord; onClose: () => void; onPatch: (p: Partial<SongRecord>) => void; loadText?: () => Promise<TextTab>; readOnly?: boolean }) {
+export function TextTabView({ song, onClose, onPatch, loadText, readOnly, head }: { song: SongRecord; onClose: () => void; onPatch: (p: Partial<SongRecord>) => void; loadText?: () => Promise<TextTab>; readOnly?: boolean; head?: React.ReactNode }) {
   const { prefs, toast } = useApp();
   const [tab, setTab] = useState<TextTab | null>(null);
   const [transpose, setTranspose] = useState(song.practice?.transpose ?? 0);
@@ -17,7 +17,8 @@ export function TextTabView({ song, onClose, onPatch, loadText, readOnly }: { so
   const [size, setSize] = useState(() => { try { return Number(localStorage.getItem('ff-tt-size')) || 15; } catch { return 15; } });
   const [scrolling, setScrolling] = useState(false);
   const [scrollSpeed, setScrollSpeed] = useState(30);
-  const [showChords, setShowChords] = useState(true);
+  // on a phone the chord panel covers the tab, so it starts closed there
+  const [showChords, setShowChords] = useState(() => typeof matchMedia === 'undefined' || matchMedia('(min-width: 900px)').matches);
   const [tuner, setTuner] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
   useWakeLock(scrolling);
@@ -74,6 +75,7 @@ export function TextTabView({ song, onClose, onPatch, loadText, readOnly }: { so
           <div className="who">{song.artist}{tab ? ` · ${tab.type}` : ''}{tab?.key ? ` · key of ${tab.key}` : ''}{tab?.tuning ? ` · ${tab.tuning}` : ''}</div>
         </div>
         {song.source.url && <a className="btn sm ghost" href={song.source.url} target="_blank" rel="noreferrer">{Icon.external({ size: 14 })} Original</a>}
+        {head}
       </div>
       <div className="player-body">
         <div className="scorewrap" ref={scroller} style={{ background: 'var(--bg)' }}>

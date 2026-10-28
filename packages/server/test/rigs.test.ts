@@ -205,7 +205,12 @@ describe('NAM model search', () => {
     const imp = await owner('/api/nam/import', { method: 'POST', json: { source: 'tone3000', id: '2', modelIds: ['22'] } });
     expect(imp.body.errors).toEqual([]);
     expect(imp.body.added).toHaveLength(1);
-    expect(imp.body.added[0]).toMatchObject({ role: 'pedal', pack: 'Tube Screamer TS808', license: 'cc-by', author: 'Steve' });
+    expect(imp.body.added[0]).toMatchObject({ role: 'pedal', pack: 'Tube Screamer TS808', license: 'cc-by', author: 'Steve', device: 'Tube Screamer TS808', setting: 'TS808 drive 9' });
+    // naming captures as settings of one device
+    const dev = await owner('/api/rig/files/device', { method: 'POST', json: { ids: [imp.body.added[0].id], device: 'My TS' } });
+    expect(dev.body.files[0]).toMatchObject({ device: 'My TS', setting: 'TS808 drive 9' });
+    const renamed = await owner(`/api/rig/files/${imp.body.added[0].id}`, { method: 'PATCH', json: { setting: 'Drive 9, tone noon' } });
+    expect(renamed.body.setting).toBe('Drive 9, tone noon');
     expect(imp.body.added[0].source).toMatchObject({ kind: 'tone3000', ref: '2#22', creator: 'capturer' });
     const listed = await owner('/api/nam/search', { method: 'POST', json: { source: 'tone3000', query: { q: 'screamer' } } });
     expect(listed.body.results[0].savedIds).toHaveLength(1);

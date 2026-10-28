@@ -5,7 +5,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import * as alphaTab from '@coderline/alphatab';
 import { ampToRig, emptyRig, rigAtBar, type AmpSettings, type AudioAsset, type PlaySource, type RigDoc, type SongRecord, type TrackRig } from '@fretforge/shared';
 import { ENGINE_RATE, ampActive, audioContext, processRigTrack, rigKey, rigQualityLevel, toInt16, type RigSegment } from '../audio/engine';
-import { MixEngine } from '../audio/mixEngine';
+import { MixEngine, type SongEngine } from '../audio/mixEngine';
+import { NativeMixEngine } from '../audio/nativeMix';
 import { YtClock } from '../audio/ytClock';
 import { SyncMap, Timeline, isSilent, renderTrack } from '../audio/tabAudio';
 import { api as server } from '../api';
@@ -34,6 +35,12 @@ export interface EngineInputs {
   video?: AudioAsset | null;
   /** tab mode: tracks that play their AI stem instead of the synth (AI track autoswitch) */
   trackStems?: Record<number, AudioAsset>;
+  /** the live rig is running: play the tab from renders so song and guitar share one clock */
+  forceMix?: boolean;
+  /** play the song inside the desktop's native engine (with the native live rig) */
+  nativeSong?: boolean;
+  /** set to skip the count-in once (the coach's wait mode resuming) */
+  skipCountIn?: { current: boolean };
   mix: Mix;
   audioMix: AudioMix;
   master: number;
@@ -45,6 +52,8 @@ export interface EngineInputs {
   looping: boolean;
   range: { startBar: number; endBar: number } | null;
   onToast: (m: string) => void;
+  /** the song played to its end (not on pause or stop) */
+  onEnded?: () => void;
 }
 
 export interface EngineState {
@@ -60,6 +69,10 @@ export interface EngineState {
   timeline: () => Timeline | null;
   /** the YouTube player, while a video is the source */
   yt: YtClock | null;
+  /** recording ms -> tab ms (identity in tab mode) */
+  toSynth: (ms: number) => number;
+  /** the song engine (for recording and the practice coach) */
+  songEngine: () => SongEngine | null;
   videoError: string | null;
 }
 
@@ -170,7 +183,7 @@ async function decodeAsset(a: AudioAsset): Promise<{ ch: Int16Array[]; durationM
 
 export function useEngine(inp: EngineInputs): EngineState {
   const { apiRef, score, scoreKey, amps, trackRigs, rigs, playSource, audio, video } = inp;
-  const engineRef = useRef<MixEngine | null>(null);
+  const engineRef = useRef<SongEngine | null>(null);
   const ytRef = useRef<YtClock | null>(null);
   const [yt, setYt] = useState<YtClock | null>(null);
   const [videoError, setVideoError] = useState<string | null>(null);
@@ -199,9 +212,35 @@ export function useEngine(inp: EngineInputs): EngineState {
   const ampedTracks = useMemo(() => Object.keys(plans).map(Number), [plans]);
   const stemTracks = inp.trackStems ?? {};
   const stemKey = Object.entries(stemTracks).map(([t, x]) => `${t}:${x.id}`).join(',');
-  const want = playSource === 'video' ? isVideo : playSource === 'recording' ? audio.length > 0 : ampedTracks.length > 0 || stemKey !== '';
+  const want = playSource === 'video' ? isVideo : playSource === 'recording' ? audio.length > 0 : ampedTracks.length > 0 || stemKey !== '' || !!inp.forceMix;
+  const backend = inp.nativeSong && playSource !== 'video' ? 'native' : 'browser';
 
-  const engine = () => (engineRef.current ??= new MixEngine());
+  const engine = (): SongEngine => {
+    if (engineRef.current) return engineRef.current;
+    const e: SongEngine = backend === 'native' ? new NativeMixEngine() : new MixEngine();
+    engineRef.current = e;
+    // position: engine -> alphaTab
+    e.onPosition((ms) => {
+      if (engineRef.current !== e || !activeRef.current || videoRef.current) return;
+      const out = apiRef.current?.player?.output as unknown as alphaTab.synth.IExternalMediaSynthOutput | undefined;
+      out?.updatePosition?.(syncRef.current.toSynth(ms));
+    });
+    e.onEnded(() => { if (engineRef.current === e && activeRef.current && !videoRef.current) { apiRef.current?.stop(); live.current.onEnded?.(); } });
+    void e.whenReady().then(() => setLatencyMs(e.latencyMs)).catch((err: Error) => live.current.onToast(err.message));
+    return e;
+  };
+
+  // switching between the browser and the native engine: start over with the new one
+  const backendRef = useRef(backend);
+  if (backendRef.current !== backend) {
+    backendRef.current = backend;
+    if (engineRef.current) {
+      apiRef.current?.pause();
+      engineRef.current.destroy();
+      engineRef.current = null;
+      sourcesRef.current = new Set();
+    }
+  }
   const ytClock = () => {
     if (!ytRef.current) {
       const c = new YtClock();
@@ -211,7 +250,7 @@ export function useEngine(inp: EngineInputs): EngineState {
         const out = apiRef.current?.player?.output as unknown as alphaTab.synth.IExternalMediaSynthOutput | undefined;
         out?.updatePosition?.(syncRef.current.toSynth(ms));
       });
-      c.onEnded(() => { if (activeRef.current && videoRef.current) apiRef.current?.stop(); });
+      c.onEnded(() => { if (activeRef.current && videoRef.current) { apiRef.current?.stop(); live.current.onEnded?.(); } });
       c.onRemote((playing) => {
         if (!activeRef.current || !videoRef.current) return;
         const a = apiRef.current;
@@ -224,7 +263,7 @@ export function useEngine(inp: EngineInputs): EngineState {
     return ytRef.current;
   };
   /** what alphaTab follows right now */
-  const clock = (): MixEngine | YtClock => (videoRef.current ? ytClock() : engine());
+  const clock = (): SongEngine | YtClock => (videoRef.current ? ytClock() : engine());
 
   // ------------------------------------------------------------------ switch alphaTab between synth and external media
   const setPlayerMode = (external: boolean) => {
@@ -260,24 +299,13 @@ export function useEngine(inp: EngineInputs): EngineState {
         const t = timelineRef.current;
         const k = clock();
         if (k instanceof YtClock) { void k.play(); return; }
-        void k.play(c.countIn && t ? t.countIn(syncRef.current.toSynth(k.lastMs)) : undefined);
+        const skip = c.skipCountIn?.current;
+        if (c.skipCountIn) c.skipCountIn.current = false;
+        void k.play(c.countIn && !skip && t ? t.countIn(syncRef.current.toSynth(k.lastMs)) : undefined);
       },
       pause: () => clock().pause(),
     };
   };
-
-  // position: engine -> alphaTab
-  useEffect(() => {
-    const e = engine();
-    const off = e.onPosition((ms) => {
-      if (!activeRef.current || videoRef.current) return;
-      const out = apiRef.current?.player?.output as unknown as alphaTab.synth.IExternalMediaSynthOutput | undefined;
-      out?.updatePosition?.(syncRef.current.toSynth(ms));
-    });
-    const offEnd = e.onEnded(() => { if (activeRef.current && !videoRef.current) apiRef.current?.stop(); });
-    void e.whenReady().then(() => setLatencyMs(e.latencyMs)).catch(() => {});
-    return () => { off(); offEnd(); };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => () => {
     engineRef.current?.destroy(); engineRef.current = null;
@@ -285,7 +313,7 @@ export function useEngine(inp: EngineInputs): EngineState {
   }, []);
 
   // ------------------------------------------------------------------ prepare sources
-  const prepKey = !want ? '' : isVideo ? `video|${scoreKey}|${video!.id}|${video!.youtubeId}|${video!.syncPoints.length}|${video!.offsetMs}|${video!.barPoints?.length ?? 0}` : want ? `${playSource}|${scoreKey}|${playSource === 'tab' ? ampedTracks.map((t) => `${t}:${plans[t].key}:${rigQualityLevel}`).join(',') + `|stems:${stemKey}` : audio.map((x) => x.id + x.syncPoints.length + x.offsetMs).join(',')}` : '';
+  const prepKey = !want ? '' : isVideo ? `video|${scoreKey}|${video!.id}|${video!.youtubeId}|${video!.syncPoints.length}|${video!.offsetMs}|${video!.barPoints?.length ?? 0}` : want ? `${playSource}|${scoreKey}|${playSource === 'tab' ? ampedTracks.map((t) => `${t}:${plans[t].key}:${rigQualityLevel}`).join(',') + `|stems:${stemKey}|${backend}` : audio.map((x) => x.id + x.syncPoints.length + x.offsetMs).join(',')}|${backend}` : '';
 
   useEffect(() => {
     const a = apiRef.current;
@@ -453,7 +481,7 @@ export function useEngine(inp: EngineInputs): EngineState {
     return () => ac.abort();
   }, [prepKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function keepOnly(e: MixEngine, ids: string[]) {
+  function keepOnly(e: SongEngine, ids: string[]) {
     for (const id of sourcesRef.current) if (!ids.includes(id)) e.removeSource(id);
     sourcesRef.current = new Set(ids);
   }
@@ -503,6 +531,8 @@ export function useEngine(inp: EngineInputs): EngineState {
     active, preparing, progress, tracks, latencyMs: isVideo ? 0 : latencyMs,
     audioMs: () => (videoRef.current ? ytRef.current?.lastMs : engineRef.current?.lastMs) ?? 0,
     timeline: () => timelineRef.current, yt: isVideo ? yt : null, videoError: isVideo ? videoError : null,
+    toSynth: (ms) => syncRef.current.toSynth(ms),
+    songEngine: () => (activeRef.current && !videoRef.current ? engineRef.current : null),
   };
 }
 

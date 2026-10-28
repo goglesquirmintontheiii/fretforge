@@ -184,3 +184,40 @@ class TranscribeTest(unittest.TestCase):
         snares = [h for h in d["hits"] if h["piece"] == "snare"]
         self.assertGreaterEqual(len(kicks), 12)
         self.assertGreaterEqual(len(snares), 12)
+
+
+@unittest.skipUnless(HAVE_LIBS, "numpy, soundfile and librosa are needed")
+class CapturePairTest(unittest.TestCase):
+    def test_aligns_a_distorted_reamp(self):
+        import fretforge_ai
+        d = tempfile.mkdtemp()
+        sr = 48000
+        rng = np.random.default_rng(3)
+        clicks = np.zeros(int(sr * 1.5), dtype=np.float32)
+        for k in range(3):
+            clicks[int(k * 0.5 * sr)] = 0.9
+        t = np.arange(sr * 12) / sr
+        di = (0.3 * np.sin(2 * np.pi * 110 * t) * (1 + np.sin(2 * np.pi * 0.7 * t)) * 0.5 + 0.02 * rng.normal(size=len(t))).astype(np.float32)
+        played = np.concatenate([clicks, di])
+        delay = 3127
+        amp = np.tanh(played * 6) * 0.5
+        returned = np.concatenate([np.zeros(delay, dtype=np.float32), amp, np.zeros(sr, dtype=np.float32)]) + 0.001 * rng.normal(size=delay + len(amp) + sr)
+        sf.write(os.path.join(d, "p.wav"), played, sr, subtype="FLOAT")
+        sf.write(os.path.join(d, "r.wav"), returned.astype(np.float32), sr, subtype="FLOAT")
+        xp, yp, info = fretforge_ai.align_pair(os.path.join(d, "p.wav"), os.path.join(d, "r.wav"), d, 3, int(0.5 * sr))
+        self.assertAlmostEqual(info["delayMs"], delay / sr * 1000, delta=0.1)
+        x, _ = sf.read(xp)
+        y, _ = sf.read(yp)
+        self.assertEqual(len(x), len(y))
+        # the aligned output is the gear's response to the aligned input
+        k = int(sr * 3)
+        self.assertLess(np.max(np.abs(np.tanh(x[k:k + 1000] * 6) * 0.5 - y[k:k + 1000])), 0.01)
+
+    def test_reports_silence(self):
+        import fretforge_ai
+        d = tempfile.mkdtemp()
+        sr = 48000
+        sf.write(os.path.join(d, "p.wav"), (0.2 * np.sin(np.arange(sr * 10) * 0.05)).astype(np.float32), sr)
+        sf.write(os.path.join(d, "r.wav"), np.zeros(sr * 11, dtype=np.float32), sr)
+        with self.assertRaises(ValueError):
+            fretforge_ai.align_pair(os.path.join(d, "p.wav"), os.path.join(d, "r.wav"), d)

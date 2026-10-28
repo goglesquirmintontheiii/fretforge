@@ -1,6 +1,6 @@
 {
   "name": "@fretforge/web",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,10 +8,11 @@
     "build": "vite build"
   },
   "dependencies": {
+    "@breezystack/lamejs": "^1.2.7",
     "@coderline/alphatab": "1.8.4",
     "@fontsource-variable/archivo": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
-    "@fretforge/shared": "0.6.0",
+    "@fretforge/shared": "0.7.0",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },

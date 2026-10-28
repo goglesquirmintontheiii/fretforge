@@ -8,6 +8,7 @@ import { Icon } from '../components/icons';
 import { JobRow, useJobs } from '../player/AudioPanel';
 import { RigEditor } from './RigEditor';
 import { NamSearch } from './NamSearch';
+import { AutoCapture } from './AutoCapture';
 import { roleLabel } from './BlockLibrary';
 
 export type RigTab = 'rigs' | 'library' | 'find' | 'train';
@@ -38,6 +39,8 @@ function RigLibrary({ canEdit }: { canEdit: boolean }) {
   const [kind, setKind] = useState<'all' | 'ir' | NamRole>('all');
   const [q, setQ] = useState('');
   const [editing, setEditing] = useState<string | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [deviceName, setDeviceName] = useState('');
   const list = useMemo(() => (files ?? []).filter((f) => (kind === 'all' || (kind === 'ir' ? f.kind === 'ir' : f.kind === 'nam' && (f.role ?? 'amp') === kind))
     && (!q || `${f.name} ${f.tags.join(' ')} ${f.gearMake ?? ''} ${f.gearModel ?? ''} ${f.author ?? ''} ${f.pack ?? ''} ${(f.tones ?? []).join(' ')} ${(f.genres ?? []).join(' ')}`.toLowerCase().includes(q.toLowerCase()))), [files, kind, q]);
   return (
@@ -65,17 +68,34 @@ function RigLibrary({ canEdit }: { canEdit: boolean }) {
         </div>
         <input type="search" id="rig-filter" className="grow" placeholder="Filter by name, tag, gear, tone, pack or author" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Filter models" />
       </div>
+      {canEdit && picked.size > 0 && (
+        <form className="row devicebar" onSubmit={async (e) => {
+          e.preventDefault();
+          try { await api.setDevice([...picked], deviceName); await refreshRigFiles(); toast(deviceName.trim() ? `${picked.size} capture${picked.size === 1 ? '' : 's'} are now settings of “${deviceName.trim()}”` : 'Device names removed'); setPicked(new Set()); setDeviceName(''); } catch (err) { toast((err as Error).message); }
+        }}>
+          <b>{picked.size} selected</b>
+          <input type="text" className="grow" value={deviceName} onChange={(e) => setDeviceName(e.target.value)} placeholder="Device name, e.g. My Klon" aria-label="Device name" list="ff-devices-bulk" />
+          <datalist id="ff-devices-bulk">{[...new Set((files ?? []).filter((x) => x.device).map((x) => x.device!))].map((d) => <option key={d} value={d} />)}</datalist>
+          <button className="btn sm primary">{deviceName.trim() ? 'Make them one device' : 'Clear device'}</button>
+          <button type="button" className="btn sm ghost" onClick={() => setPicked(new Set())}>Cancel</button>
+        </form>
+      )}
       {files === null ? <div className="empty"><span className="spinner" /></div> : list.length === 0 ? (
         <div className="empty"><b>{files.length ? 'Nothing matches' : 'No models yet'}</b>{files.length ? '' : 'Add NAM captures (.nam) of amps, preamps, pedals, cabs or full rigs and cabinet impulse responses (.wav), one by one or as .zip packs, or find free ones online.'}</div>
       ) : (
         <div className="card songlist">
           {list.map((f) => (
             <div key={f.id} className="rigfile">
-              <span className={'kind ' + f.kind}>{f.kind === 'nam' ? roleLabel(f.role).toUpperCase().slice(0, 5) : 'IR'}</span>
+              {canEdit ? (
+                <label className="kind pick" title="Select to give several captures or IRs one device name">
+                  <input type="checkbox" checked={picked.has(f.id)} onChange={(e) => setPicked((cur) => { const n = new Set(cur); if (e.target.checked) n.add(f.id); else n.delete(f.id); return n; })} aria-label={`Select ${f.name}`} />
+                  <span>{f.kind === 'nam' ? roleLabel(f.role).toUpperCase().slice(0, 5) : 'IR'}</span>
+                </label>
+              ) : <span className={'kind ' + f.kind}>{f.kind === 'nam' ? roleLabel(f.role).toUpperCase().slice(0, 5) : 'IR'}</span>}
               <div style={{ minWidth: 0 }}>
                 {editing === f.id ? <RigFileForm f={f} onDone={() => setEditing(null)} /> : (
                   <>
-                    <div className="t">{f.name}</div>
+                    <div className="t">{f.device ? <>{f.device} <span className="faint">· {f.setting ?? f.name}</span></> : f.name}</div>
                     <div className="a">{describeRigFile(f)}{f.author ? ` · by ${f.author}` : ''}{f.pack ? ` · ${f.pack}` : ''}{f.source?.kind === 'tone3000' ? ' · TONE3000' : f.source?.kind === 'github' ? ' · GitHub' : ''}</div>
                     {(f.tags.length > 0 || (f.tones ?? []).length > 0 || (f.genres ?? []).length > 0) && <div className="chips" style={{ marginTop: 4 }}>
                       {(f.tones ?? []).map((t) => <span key={`t${t}`} className="badge">{t}</span>)}
@@ -106,13 +126,17 @@ function RigLibrary({ canEdit }: { canEdit: boolean }) {
 
 function RigFileForm({ f, onDone }: { f: RigFile; onDone: () => void }) {
   const [name, setName] = useState(f.name);
+  const [device, setDevice] = useState(f.device ?? '');
+  const [setting, setSetting] = useState(f.setting ?? '');
+  const files = useRigFiles() ?? [];
+  const deviceNames = [...new Set(files.filter((x) => x.device).map((x) => x.device!))];
   const [tags, setTags] = useState(f.tags.join(', '));
   const [role, setRole] = useState<NamRole>(f.role ?? 'amp');
   const [author, setAuthor] = useState(f.author ?? '');
   return (
     <form className="row" style={{ gap: 6 }} onSubmit={async (e) => {
       e.preventDefault();
-      await api.patchRigFile(f.id, { name, tags: tags.split(',').map((t) => t.trim()).filter(Boolean), role: f.kind === 'nam' ? role : undefined, author });
+      await api.patchRigFile(f.id, { name, tags: tags.split(',').map((t) => t.trim()).filter(Boolean), role: f.kind === 'nam' ? role : undefined, author, device, setting });
       await refreshRigFiles();
       onDone();
     }}>
@@ -121,6 +145,13 @@ function RigFileForm({ f, onDone }: { f: RigFile; onDone: () => void }) {
         <select value={role} onChange={(e) => setRole(e.target.value as NamRole)} aria-label="What it is">
           {NAM_ROLES.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
         </select>
+      )}
+      {(
+        <>
+          <input type="text" value={device} onChange={(e) => setDevice(e.target.value)} aria-label="Device" placeholder={f.kind === 'ir' ? 'Cab, e.g. My 4x12' : 'Device, e.g. My Klon'} list="ff-devices" />
+          <datalist id="ff-devices">{deviceNames.map((d) => <option key={d} value={d} />)}</datalist>
+          <input type="text" value={setting} onChange={(e) => setSetting(e.target.value)} aria-label="Setting" placeholder="Setting, e.g. Gain 2 o’clock" />
+        </>
       )}
       <input type="text" value={tags} onChange={(e) => setTags(e.target.value)} aria-label="Tags" placeholder="tags, comma separated" />
       <input type="text" value={author} onChange={(e) => setAuthor(e.target.value)} aria-label="Author" placeholder="Author" />
@@ -139,8 +170,11 @@ function TrainCapture() {
   const [epochs, setEpochs] = useState(100);
   const training = jobs.filter((j) => j.kind === 'train-nam').slice(0, 5);
   return (
+    <>
+    <AutoCapture aiReady={!!ai?.available} aiReason={ai?.reason} onStarted={refresh} />
+    {training.length > 0 && <section className="card setcard"><h3>Training</h3>{training.map((j) => <JobRow key={j.id} j={j} onCancel={() => api.cancelJob(j.id).then(refresh)} />)}</section>}
     <section className="card setcard">
-      <h3>Train a capture</h3>
+      <h3>From a reamp of the test signal</h3>
       <p className="muted" style={{ margin: 0 }}>
         Reamp NAM’s standard test signal (input.wav from the NAM project) through your amp or pedal, record the result at the same sample rate and length, and upload the recording.
         Training runs in the AI worker and the finished model lands in your library. Put the test signal next to the worker script (<span className="mono">ai/input.wav</span>).
@@ -153,7 +187,7 @@ function TrainCapture() {
           try { await api.trainNam(file!, name.trim(), epochs); refresh(); toast('Training started'); } catch (e) { toast((e as Error).message); }
         }}>Train</button>
       </div>
-      {training.map((j) => <JobRow key={j.id} j={j} onCancel={() => api.cancelJob(j.id).then(refresh)} />)}
     </section>
+    </>
   );
 }

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer as createHttp } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -285,6 +285,9 @@ describe('recordings and AI jobs', () => {
   });
 
   it('a failing job reports the worker message', async () => {
+    // a stand-in yt-dlp so the route gets past the “install yt-dlp” check
+    mkdirSync(join(dir, 'data', 'bin'), { recursive: true });
+    writeFileSync(join(dir, 'data', 'bin', 'yt-dlp'), '#!/bin/sh\necho 2026.10.01\n', { mode: 0o755 });
     const job = (await member(`/api/songs/${songId}/youtube`, { method: 'POST', json: { url: 'https://www.youtube.com/watch?v=abc' } })).body;
     let j: any;
     for (let i = 0; i < 100 && (!j || j.state === 'queued' || j.state === 'running'); i++) {

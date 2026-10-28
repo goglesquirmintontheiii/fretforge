@@ -3,10 +3,12 @@ import type { PracticeState, SongRecord } from '@fretforge/shared';
 import { api } from '../api';
 import { useApp } from '../lib/app';
 import { ScorePlayer } from './ScorePlayer';
+import { GigBar, useGig } from './GigBar';
 import { TextTabView } from './TextTabView';
 
-export function SongView({ id, onClose, edit }: { id: string; onClose: () => void; edit?: boolean }) {
+export function SongView({ id, onClose, edit, gig: gigId }: { id: string; onClose: () => void; edit?: boolean; gig?: string }) {
   const { toast } = useApp();
+  const gig = useGig(gigId, id);
   const [song, setSong] = useState<SongRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pending = useRef<Partial<SongRecord> & { practice?: PracticeState }>({});
@@ -38,6 +40,7 @@ export function SongView({ id, onClose, edit }: { id: string; onClose: () => voi
 
   if (error) return <div className="page"><div className="error">{error}</div><button className="btn" onClick={onClose}>Back to library</button></div>;
   if (!song) return <div className="page"><div className="empty"><span className="spinner" /></div></div>;
-  if (song.format === 'text') return <TextTabView song={song} onClose={onClose} onPatch={onPatch} />;
-  return <ScorePlayer song={song} onClose={onClose} onPatch={onPatch} onToast={toast} edit={edit} onSongChange={(s) => setSong(s)} />;
+  if (song.format === 'text') return <TextTabView song={song} onClose={onClose} onPatch={onPatch} head={gig ? <GigBar gig={gig} /> : undefined} />;
+  return <ScorePlayer song={song} onClose={onClose} onPatch={onPatch} onToast={toast} edit={edit} onSongChange={(s) => setSong(s)}
+    head={gig ? <GigBar gig={gig} /> : undefined} onFinished={gig?.autoNext && gig.next ? gig.goNext : undefined} />;
 }

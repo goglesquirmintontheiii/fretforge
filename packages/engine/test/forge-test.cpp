@@ -3,6 +3,7 @@
 //   forge-test ir  <ir.f32> <in.f32> <out.f32> [block]
 //   forge-test bench <code.i32> <weights.f32> <seconds>
 //   forge-test blocks            every built-in block at its defaults: level, peak, NaN, speed
+//   forge-test player            the song player: timing, loops, mute ramps, stretch, end of song
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -14,6 +15,7 @@
 #include "chain.h"
 #include "convolver.h"
 #include "nam.h"
+#include "player.h"
 
 template <class T> static std::vector<T> load(const char* path) {
   std::vector<T> v; FILE* f = fopen(path, "rb"); if (!f) { perror(path); exit(1); }
@@ -83,6 +85,112 @@ int main(int argc, char** argv) {
       delete g;
     }
     printf(fails ? "BLOCKS FAILED: %d\n" : "blocks ok\n", fails);
+    return fails ? 3 : 0;
+  }
+  if (mode == "player") {
+    using forge::Player; using forge::PlayerSource;
+    const float sr = 48000;
+    int fails = 0;
+    auto check = [&](bool ok, const char* what) { printf("%s %s\n", ok ? "ok  " : "FAIL", what); if (!ok) fails++; };
+    // a source whose sample k is k (mod 20000), so positions can be read back from the output
+    auto ramp = [](int len) {
+      auto* s = new PlayerSource();
+      s->length = len;
+      s->ch[0] = (int16_t*)calloc(len, 2);
+      for (int i = 0; i < len; i++) s->ch[0][i] = (int16_t)(i % 20000);
+      s->ch[1] = s->ch[0];
+      s->scale = 1.f / 32767.f;
+      return s;
+    };
+    auto valueAt = [](float out) { return out / 0.75f * 32767.f; };
+    {
+      Player p(sr, 4096);
+      p.setSource(0, ramp(48000 * 5));
+      p.mix(0, 0.5f, 0, false, false);
+      p.seek(1000);
+      p.play(0, 0);
+      std::vector<float> L(4096), R(4096);
+      int sizes[] = { 333, 64, 1024, 517, 2048 };
+      long frame = 1000;
+      bool exact = true;
+      for (int k = 0; k < 40; k++) {
+        const int n = sizes[k % 5];
+        p.render(L.data(), R.data(), n);
+        for (int i = 0; i < n; i++) {
+          const float want = ((frame + i) % 20000) * 0.5f;
+          if (std::fabs(valueAt(L[i]) - want) > 0.6f && want * 0.5f / 32767.f * 0.75f < 0.85f) { exact = false; }
+        }
+        frame += n;
+      }
+      check(exact, "plays from the seek position, sample-exact across odd block sizes");
+      check(std::fabs(p.heardFrames() - frame) < 1, "reports the heard position");
+      // loop
+      p.setLoop(10000, 14000);
+      p.seek(10000);
+      long f2 = 10000; bool looped = true;
+      for (int k = 0; k < 20; k++) {
+        p.render(L.data(), R.data(), 1024);
+        for (int i = 0; i < 1024; i++) {
+          const long want = 10000 + ((f2 - 10000 + i) % 4000);
+          if (std::fabs(valueAt(L[i]) - (want % 20000) * 0.5f) > 0.6f) looped = false;
+        }
+        f2 += 1024;
+      }
+      check(looped, "loops seamlessly");
+      // mute ramps instead of jumping
+      p.setLoop(0, 0);
+      p.mix(0, 0.5f, 0, true, false);
+      p.render(L.data(), R.data(), 256);
+      bool smooth = true;
+      for (int i = 1; i < 256; i++) if (std::fabs(L[i] - L[i - 1]) > 0.02f) smooth = false;
+      check(smooth && std::fabs(L[255]) < 0.01f, "mute fades over one block");
+      p.render(L.data(), R.data(), 256);
+      bool silent = true;
+      for (int i = 0; i < 256; i++) if (L[i] != 0) silent = false;
+      check(silent, "muted source is silent");
+      // replacing a source frees the old one once the audio thread moved on
+      p.setSource(0, ramp(1000));
+      p.render(L.data(), R.data(), 64);
+      p.render(L.data(), R.data(), 64);
+      p.collect();
+      check(true, "source swap and collect");
+    }
+    {
+      // slowed down: 0.5x through the stretcher takes twice as long to cover the same music
+      Player p(sr, 4096);
+      auto* s = new PlayerSource();
+      const int len = 48000 * 4;
+      s->length = len;
+      s->ch[0] = (int16_t*)calloc(len, 2);
+      for (int i = 0; i < len; i++) s->ch[0][i] = (int16_t)(8000 * std::sin(2 * 3.14159265 * 220 * i / sr));
+      s->ch[1] = s->ch[0];
+      p.setSource(3, s);
+      p.setRate(0.5f);
+      p.play(0, 0);
+      std::vector<float> L(1024), R(1024);
+      float peak = 0; bool finite = true;
+      for (int k = 0; k < 94; k++) { p.render(L.data(), R.data(), 1024); for (float v : L) { if (!std::isfinite(v)) finite = false; peak = std::max(peak, std::fabs(v)); } }
+      const double heard = p.heardFrames();
+      check(finite && peak > 0.05f, "stretched audio is audible and finite");
+      check(heard > 48000 * 0.9 && heard < 48000 * 1.1, "half speed covers about one second of music in two");
+      // the end of the song stops playback and counts once
+      p.setRate(1);
+      p.setDuration(48000 * 1.5);
+      for (int k = 0; k < 80; k++) p.render(L.data(), R.data(), 1024);
+      check(!p.playing() && p.endedCount() == 1, "stops at the end of the song");
+    }
+    {
+      // count-in clicks, then the music
+      Player p(sr, 4096);
+      p.setSource(0, ramp(48000));
+      p.play(2, 4800);
+      std::vector<float> L(4096), R(4096);
+      p.render(L.data(), R.data(), 4096);
+      check(p.counting() && std::fabs(p.heardFrames()) < 1, "count-in holds the timeline");
+      for (int k = 0; k < 3; k++) p.render(L.data(), R.data(), 4096);
+      check(!p.counting() && p.heardFrames() > 1000, "music starts after the count-in");
+    }
+    printf(fails ? "PLAYER FAILED: %d\n" : "player ok\n", fails);
     return fails ? 3 : 0;
   }
   return 1;

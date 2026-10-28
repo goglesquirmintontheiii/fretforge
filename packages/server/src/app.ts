@@ -90,7 +90,8 @@ export async function createServer(cfg: ServerConfig, providerCtx?: Partial<Prov
   app.setErrorHandler((err: Error, _req, reply) => {
     const status = err instanceof UnsupportedFormatError ? 415 : err instanceof ProviderError ? 502 : (err as { statusCode?: number }).statusCode ?? 500;
     if (status >= 500 && !(err instanceof ProviderError)) console.error(err);
-    reply.code(status).send({ error: err.message || 'Something went wrong.' });
+    const code = (err as { code?: string }).code;
+    reply.code(status).send({ error: err.message || 'Something went wrong.', ...(code && /^ff-/.test(code) ? { code } : {}) });
   });
 
   const ctx: Ctx = { cfg, store, library, auth, oidc, providers, jobs };

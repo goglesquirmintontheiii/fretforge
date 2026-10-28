@@ -8,3 +8,4 @@ export * from './rigBlocks';
 export * from './rig';
 export * from './namTags';
 export * from './tunings';
+export * from './toneMatch';

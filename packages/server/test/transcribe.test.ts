@@ -118,7 +118,8 @@ describe('AI result to a tab', () => {
 });
 
 import { afterAll, beforeAll } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { ytdlpStatus } from '../src/ytdlp';
 import { tmpdir } from 'node:os';
 import { createServer, type FretforgeServer } from '../src/app';
 import { simplify } from '../src/transcribe/simplify';
@@ -141,6 +142,14 @@ describe('AI tabs over HTTP', () => {
   afterAll(async () => { await srv.close(); rmSync(dir, { recursive: true, force: true }); });
 
   it('queues a transcription and turns the result into a private song with synced stems', async () => {
+    // without yt-dlp a YouTube link asks for the one-click install
+    const missing = await call('/api/transcribe', { method: 'POST', json: { url: 'https://youtu.be/dQw4w9WgXcQ' } });
+    if (!ytdlpStatus(join(dir, 'data'), join(dir, 'data', 'ai-venv')).found) {
+      expect(missing.status).toBe(400);
+      expect(missing.body.code).toBe('ff-ytdlp-missing');
+      mkdirSync(join(dir, 'data', 'bin'), { recursive: true });
+      writeFileSync(join(dir, 'data', 'bin', 'yt-dlp'), '#!/bin/sh\necho 2026.10.01\n', { mode: 0o755 });
+    }
     const q = await call('/api/transcribe', { method: 'POST', json: { url: 'https://youtu.be/dQw4w9WgXcQ', options: { instruments: ['guitar', 'bass', 'drums', 'kazoo'], title: 'Test song', bpm: 999 } } });
     expect(q.status).toBe(200);
     expect(q.body).toMatchObject({ kind: 'transcribe', state: 'queued' });

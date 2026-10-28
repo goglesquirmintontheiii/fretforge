@@ -37,6 +37,7 @@ jobs:
         run: |
           npx playwright install --with-deps chromium
           node scripts/smoke.mjs --shots smoke-shots
+          node scripts/smoke-gear.mjs smoke-shots/gear
       - name: Package the desktop app
         run: |
           npm run build -w @fretforge/desktop

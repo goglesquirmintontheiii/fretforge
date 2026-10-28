@@ -26,8 +26,10 @@ import time
 
 
 def emit(**kw):
-    sys.stdout.write(json.dumps(kw) + "\n")
-    sys.stdout.flush()
+    # always the real stdout: trainers redirect sys.stdout to stderr to keep their chatter out
+    out = sys.__stdout__ or sys.stdout
+    out.write(json.dumps(kw) + "\n")
+    out.flush()
 
 
 def progress(p, message):
@@ -313,14 +315,187 @@ def cmd_align(args):
 # ---------------------------------------------------------------- youtube
 def cmd_youtube(args):
     progress(0.02, "Downloading")
-    path, title = youtube_download(args["url"], args["out"], args.get("node"), 0.02, 0.92)
+    path, title = youtube_download(args["url"], args["out"], args.get("node"), 0.02, 0.92, args.get("ytdlp"))
     emit(result={"file": path, "title": title})
 
 
 # ---------------------------------------------------------------- train-nam
+def align_pair(played_path, returned_path, out_dir, markers=0, spacing=0):
+    """Lines up what came back through the gear with what was played.
+
+    The played file starts with `markers` clicks `spacing` samples apart, then the DI. The delay
+    is the lag that best matches the start of the played signal inside the returned one
+    (normalized cross-correlation on the first seconds). Returns (x_path, y_path, info).
+    """
+    import numpy as np
+    import soundfile as sf
+    x, sr = sf.read(played_path, dtype="float32", always_2d=True)
+    y, sr2 = sf.read(returned_path, dtype="float32", always_2d=True)
+    if sr != sr2:
+        raise ValueError(f"The played audio ({sr} Hz) and the recording ({sr2} Hz) have different sample rates.")
+    x, y = x[:, 0], y[:, 0]
+    if len(x) < sr * 5:
+        raise ValueError("The DI is too short. Record at least 20 seconds of playing.")
+    peak_y = float(np.max(np.abs(y))) if len(y) else 0.0
+    if peak_y < 1e-3:
+        raise ValueError("Nothing came back on the input. Check that the gear's output is connected to the input you recorded the guitar on.")
+    # correlate the first seconds of the played signal against the returned one (up to 2 s of latency)
+    seg = x[: int(sr * min(8, len(x) / sr))]
+    max_lag = int(sr * 2)
+    search = y[: len(seg) + max_lag]
+    if len(search) < len(seg) + 1:
+        search = np.concatenate([search, np.zeros(len(seg) + 1 - len(search), dtype=np.float32)])
+
+    def xcorr(a, b):
+        """correlation of a (template) at each lag 0..max_lag inside b, normalized by b's local energy"""
+        m = 1
+        while m < len(a) + len(b):
+            m *= 2
+        c = np.fft.irfft(np.fft.rfft(a[::-1], m) * np.fft.rfft(b, m), m)[len(a) - 1: len(a) - 1 + max_lag + 1]
+        cs = np.concatenate([[0.0], np.cumsum(b.astype(np.float64) ** 2)])
+        lags = np.arange(len(c))
+        ends = np.minimum(lags + len(a), len(b))
+        energy = np.sqrt(np.maximum(cs[ends] - cs[np.minimum(lags, len(b))], 1e-12))
+        return c / energy
+
+    def env(z):
+        k = max(1, int(sr * 0.002))
+        return np.convolve(np.abs(z), np.ones(k) / k, mode="same").astype(np.float32)
+
+    # distortion changes the waveform but keeps the envelope: use both
+    score = np.abs(xcorr(seg, search)) + 0.5 * xcorr(env(seg) - env(seg).mean(), env(search) - env(search).mean())
+    delay = int(np.argmax(score))
+    # skip the clicks: training starts after them
+    start = int(markers * spacing) if markers and spacing else 0
+    xa = x[start:]
+    ya = y[delay + start: delay + start + len(xa)]
+    n = min(len(xa), len(ya))
+    if n < sr * 5:
+        raise ValueError("The recording of the gear stops too early. Let it run until the playback ends.")
+    xa, ya = xa[:n], ya[:n]
+    # NAM wants some silence before the validation part; give it half a second at the start
+    pad = np.zeros(int(sr * 0.5), dtype=np.float32)
+    xa = np.concatenate([pad, xa])
+    ya = np.concatenate([pad, ya])
+    xp, yp = os.path.join(out_dir, "x.wav"), os.path.join(out_dir, "y.wav")
+    sf.write(xp, xa, sr, subtype="FLOAT")
+    sf.write(yp, ya, sr, subtype="FLOAT")
+    clipped = float(np.mean(np.abs(ya) > 0.99))
+    return xp, yp, {"delayMs": round(delay / sr * 1000, 2), "seconds": round(n / sr, 1), "clipped": clipped, "sampleRate": sr}
+
+
+STANDARD_WAVENET = {
+    "layers_configs": [
+        {"input_size": 1, "condition_size": 1, "channels": 16, "head_size": 8, "kernel_size": 3,
+         "dilations": [1, 2, 4, 8, 16, 32, 64, 128, 256, 512], "activation": "Tanh", "gated": False, "head_bias": False},
+        {"condition_size": 1, "input_size": 16, "channels": 8, "head_size": 1, "kernel_size": 3,
+         "dilations": [1, 2, 4, 8, 16, 32, 64, 128, 256, 512], "activation": "Tanh", "gated": False, "head_bias": True},
+    ],
+    "head_scale": 0.02,
+}
+
+
+def _nam_trainer_imports():
+    """NAM's trainer imports tkinter for its GUI; Pythons without Tk (headless Linux, some
+    Homebrew builds) only need a stand-in, since the worker never opens a window."""
+    try:
+        import tkinter  # noqa: F401
+    except Exception:
+        import types
+        tk = types.ModuleType("tkinter")
+        for n in ("Tk", "Toplevel", "Label", "Button", "Frame", "Entry", "StringVar", "IntVar", "BooleanVar", "Checkbutton", "Text"):
+            setattr(tk, n, type(n, (), {"__init__": lambda self, *a, **k: None}))
+        tk.filedialog = types.ModuleType("tkinter.filedialog")
+        tk.messagebox = types.ModuleType("tkinter.messagebox")
+        tk.ttk = types.ModuleType("tkinter.ttk")
+        for sub in ("filedialog", "messagebox", "ttk"):
+            sys.modules["tkinter." + sub] = getattr(tk, sub)
+        sys.modules["tkinter"] = tk
+
+
+def train_pair(args):
+    """Automated capture: align, then train with NAM's full trainer on the custom pair."""
+    out = args["out"]
+    os.makedirs(out, exist_ok=True)
+    try:
+        _nam_trainer_imports()
+        import torch
+        from nam.train import full as nam_full
+    except Exception:
+        fail("The NAM trainer is not installed. Set up the AI tools in Settings.")
+    progress(0.02, "Lining up the recording with what was played")
+    try:
+        xp, yp, info = align_pair(args["input"], args["output"], out, int(args.get("markers") or 0), int(args.get("markerSpacing") or 0))
+    except ValueError as e:
+        fail(str(e))
+    if info["clipped"] > 0.001:
+        progress(0.04, "The recording clipped in places; lower the gear's output level for a better capture")
+    sr = info["sampleRate"]
+    val = int(min(sr * 9, info["seconds"] * sr * 0.15))
+    data_config = {
+        "train": {"start_samples": None, "stop_samples": -val, "ny": 8192},
+        "validation": {"start_samples": -val, "stop_samples": None, "ny": None},
+        "common": {"x_path": xp, "y_path": yp, "delay": 0, "allow_unequal_lengths": True, "require_input_pre_silence": None},
+    }
+    try:
+        from nam.train import core as nam_core
+        model_config = nam_core._get_packed_model_config()  # NAM 0.13+
+    except Exception:
+        model_config = {
+            "net": {"name": "WaveNet", "config": STANDARD_WAVENET},
+            "loss": {"val_loss": "esr", "mask_first": 4096, "pre_emph_weight": 1.0, "pre_emph_coef": 0.85},
+            "optimizer": {"lr": 0.004},
+            "lr_scheduler": {"class": "ExponentialLR", "kwargs": {"gamma": 0.993}},
+        }
+    if torch.cuda.is_available():
+        device = {"accelerator": "gpu", "devices": 1}
+    elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        device = {"accelerator": "mps", "devices": 1}
+    else:
+        device = {}
+    epochs = int(args.get("epochs", 100))
+    learning_config = {
+        "train_dataloader": {"batch_size": 16, "shuffle": True, "pin_memory": True, "drop_last": True, "num_workers": 0},
+        "val_dataloader": {},
+        "trainer": {"max_epochs": epochs, **device},
+    }
+    progress(0.05, f"Training for {epochs} epochs on {info['seconds']:.0f} s of your playing (latency {info['delayMs']} ms)")
+    import threading
+    started = time.time()
+    done = threading.Event()
+
+    def ticker():
+        while not done.wait(5):
+            mins = (time.time() - started) / 60
+            progress(min(0.9, 0.05 + mins / (epochs * 0.12 + 5)), f"Training… {mins:.0f} min so far")
+
+    threading.Thread(target=ticker, daemon=True).start()
+    from pathlib import Path
+    train_dir = Path(out, "train")
+    train_dir.mkdir(parents=True, exist_ok=True)
+    real_stdout = sys.stdout
+    sys.stdout = sys.stderr
+    try:
+        nam_full.main(data_config, model_config, learning_config, train_dir, no_show=True, make_plots=False)
+    finally:
+        sys.stdout = real_stdout
+        done.set()
+    model = None
+    for root, _, files in os.walk(out):
+        for f in files:
+            if f.endswith(".nam"):
+                model = os.path.join(root, f)
+    if not model:
+        fail("Training finished without a model file.")
+    emit(result={"file": model, "name": args.get("name", "New capture"), "delayMs": info["delayMs"], "seconds": info["seconds"]})
+
+
 def cmd_train_nam(args):
+    if args.get("mode") == "pair":
+        return train_pair(args)
     out = args["out"]
     try:
+        _nam_trainer_imports()
         from nam.train import core as nam_core
         from nam.train.metadata import UserMetadata
     except Exception:
@@ -398,7 +573,7 @@ def cmd_transcribe(args):
     title = args.get("title")
     if args.get("url"):
         progress(0.0, "Downloading the audio")
-        src, yt_title = youtube_download(args["url"], out, args.get("node"), 0.0, 0.08)
+        src, yt_title = youtube_download(args["url"], out, args.get("node"), 0.0, 0.08, args.get("ytdlp"))
         title = title or yt_title
     if not src or not os.path.exists(src):
         fail("The recording file is missing.")
@@ -459,8 +634,13 @@ def cmd_transcribe(args):
     })
 
 
-def youtube_download(url, out, node, p0, p1):
-    exe = shutil.which("yt-dlp")
+def youtube_download(url, out, node, p0, p1, ytdlp=None):
+    exe = ytdlp if ytdlp and os.path.exists(ytdlp) else shutil.which("yt-dlp")
+    if not exe:
+        try:
+            import yt_dlp  # noqa: F401
+        except Exception:
+            fail("yt-dlp isn't installed. Install it from the YouTube box (one click) or in Settings → AI tools.")
     cmd = [exe] if exe else [sys.executable, "-m", "yt_dlp"]
     if node:
         cmd += ["--js-runtimes", f"node:{node}"]

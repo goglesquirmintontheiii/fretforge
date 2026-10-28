@@ -26,7 +26,7 @@ export function App() {
   useEffect(() => { refresh(); }, []);
 
   // share links and invites work without an account
-  if (route.name === 'share') return <AppProvider mode="server" version="" user={null}><SharedSongView token={route.token} /></AppProvider>;
+  if (route.name === 'share') return <AppProvider mode="server" version="" user={null}><LiveRigProvider onError={() => {}}><SharedSongView token={route.token} /></LiveRigProvider></AppProvider>;
   if (error) return <div className="authwrap"><div className="card authcard"><h2>Fretforge can’t start</h2><p className="error">{error}</p><button className="btn" onClick={() => location.reload()}>Try again</button></div></div>;
   if (!status) return <div className="authwrap"><span className="spinner" aria-label="Loading" /></div>;
   if (route.name === 'invite' && !status.authenticated) return <InviteScreen token={route.token} onDone={() => { go('/'); refresh(); }} />;
@@ -67,7 +67,7 @@ function Shell() {
           {route.name === 'new' && <NewTabView />}
           {route.name === 'ai' && <AiTabView key={route.audio ?? ''} audioId={route.audio} />}
           {(route.name === 'invite' || route.name === 'signin') && <LibraryView />}
-          {route.name === 'song' && <SongView key={route.id} id={route.id} edit={route.edit} onClose={() => (history.length > 1 ? history.back() : go('/'))} />}
+          {route.name === 'song' && <SongView key={route.id} id={route.id} edit={route.edit} gig={route.gig} onClose={() => (history.length > 1 ? history.back() : go('/'))} />}
         </Suspense>
       </main>
     </div>

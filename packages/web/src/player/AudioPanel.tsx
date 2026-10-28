@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import * as alphaTab from '@coderline/alphatab';
 import { encodeWav, formatTime, type AudioAsset, type Job, type PlaySource, type SyncPoint } from '@fretforge/shared';
-import { api } from '../api';
+import { api, type ApiError } from '../api';
+import { YtdlpInstall } from '../components/YtdlpInstall';
 import { useApp } from '../lib/app';
 import { Icon } from '../components/icons';
 import { Timeline } from '../audio/tabAudio';
@@ -70,6 +71,7 @@ export function AudioPanel({ songId, audio, onAudioChanged, playSource, setPlayS
   const { jobs, ai, refresh } = useJobs(songId);
   const [busy, setBusy] = useState(false);
   const [yt, setYt] = useState('');
+  const [ytCheck, setYtCheck] = useState(0);
   const [syncing, setSyncing] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const lastDone = useRef<string>('');
@@ -93,7 +95,7 @@ export function AudioPanel({ songId, audio, onAudioChanged, playSource, setPlayS
 
   const originals = audio.filter((a) => a.kind === 'original');
   const videos = audio.filter((a) => a.kind === 'video');
-  const files = audio.filter((a) => a.kind !== 'video');
+  const files = audio.filter((a) => a.kind === 'original' || a.kind === 'stem');
   const addVideo = async () => {
     try {
       const v = await api.addVideo(songId, yt.trim());
@@ -193,8 +195,9 @@ export function AudioPanel({ songId, audio, onAudioChanged, playSource, setPlayS
             <input type="text" id="yt-url" className="grow" placeholder="YouTube link" value={yt} onChange={(e) => setYt(e.target.value)} aria-label="YouTube link" style={{ minWidth: 140 }} />
             <button className="btn sm primary" disabled={!yt.trim()} title="Play the video in Fretforge, synced to the tab">Add video</button>
             <button type="button" className="btn sm" disabled={!yt.trim()} title="Download the audio as a recording (for stems and the mixer)"
-              onClick={async () => { try { await api.youtube(songId, yt.trim()); setYt(''); refresh(); toast('Getting the audio…'); } catch (err) { toast((err as Error).message); } }}>Get audio</button>
+              onClick={async () => { try { await api.youtube(songId, yt.trim()); setYt(''); refresh(); toast('Getting the audio…'); } catch (err) { if ((err as ApiError).code === 'ff-ytdlp-missing') setYtCheck((n) => n + 1); else toast((err as Error).message); } }}>Get audio</button>
           </form>
+          {(yt.trim() || ytCheck > 0) && <YtdlpInstall recheck={ytCheck} />}
         </>
       )}
       {!audio.length && <p className="muted" style={{ margin: 0, fontSize: 13 }}>Add a YouTube video or the original recording to play along with it. Recordings can be split into instruments with the AI tools.</p>}

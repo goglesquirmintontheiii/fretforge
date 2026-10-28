@@ -13,9 +13,10 @@ Fretforge's own code is under the MIT License (see LICENSE). It includes or bund
 | Electron / Chromium | MIT / BSD and others (see `LICENSES.chromium.html` in the app) | Desktop shell |
 | [Signalsmith Stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch) and [Signalsmith Linear](https://github.com/Signalsmith-Audio/linear) | MIT | Time-stretch, pitch-shift and FFT in the audio engine (`packages/engine/vendor`) |
 | [NeuralAmpModelerCore](https://github.com/sdatkinson/NeuralAmpModelerCore) | MIT | Example models used as test fixtures (`packages/engine/test/fixtures`); forge-dsp's NAM runtime is written to match its behaviour |
+| [lamejs](https://github.com/shijinyu/lamejs) (`@breezystack/lamejs`) | LGPL-3.0 (license text shipped as `licenses/lamejs-LICENSE.txt` in the web build; source at the link) | MP3 export of takes. Loaded as its own unmodified module (`assets/lamejs-*.js`) on demand, so it can be replaced |
 | [node-api-headers](https://github.com/nodejs/node-api-headers) | MIT | Build-time headers for the native addon |
 | wasi-libc, LLVM libc++ | MIT-style / Apache-2.0 with LLVM exception | Linked into the WASM engine |
-| Python AI worker dependencies (not bundled; installed on request): PyTorch (BSD), Demucs (MIT), librosa (ISC), soundfile (BSD), yt-dlp (Unlicense), neural-amp-modeler (MIT) | | `ai/fretforge_ai.py` |
+| Python AI worker dependencies (not bundled; installed on request): PyTorch (BSD), Demucs (MIT), librosa (ISC), soundfile (BSD), yt-dlp (Unlicense; also downloadable from its GitHub releases on request), neural-amp-modeler (MIT), Basic Pitch (Apache-2.0), Beat This! (MIT), faster-whisper (MIT) | | `ai/fretforge_ai.py` |
 
 ## songsterr-downloader license
 

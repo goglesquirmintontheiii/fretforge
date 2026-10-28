@@ -117,6 +117,10 @@ export interface PracticeState {
   playSource?: PlaySource;
   /** the video (asset id) played when playSource is 'video' */
   videoId?: string;
+  /** the rig your own guitar plays through in this song, with switches at bars */
+  liveRig?: import('./rig').TrackRig;
+  /** practice coach sessions, newest last */
+  coachHistory?: CoachSession[];
   /** per tab track: synth, its AI stem, or auto (the stem while the track is soloed) */
   trackSources?: Record<string, 'auto' | 'synth' | 'stem'>;
   /** mixer state for audio assets by asset id */
@@ -351,6 +355,10 @@ export interface RigFile {
   tags: string[];
   /** NAM: what the capture is (IRs are always cabs) */
   role?: NamRole;
+  /** your name for the device captured (e.g. "Klon"); captures with the same device are one block in the rig editor */
+  device?: string;
+  /** which setting of the device this capture is (e.g. "Gain 2 o'clock, treble noon") */
+  setting?: string;
   /** tone words (clean, crunch, high gain...) and genres */
   tones?: string[];
   genres?: string[];
@@ -396,7 +404,11 @@ export interface AudioAsset {
   id: string;
   songId: string;
   /** a file (recording or stem) or a YouTube video played in the embedded player */
-  kind: 'original' | 'stem' | 'video';
+  kind: 'original' | 'stem' | 'video' | 'take';
+  /** take: one part of a recording made while playing along */
+  take?: TakeInfo;
+  /** who added it (takes are visible only to them) */
+  createdBy?: string | null;
   /** video: YouTube video id */
   youtubeId?: string;
   /** video: where it came from and what it is (Songsterr: full mix, backing, solo, playthrough) */
@@ -418,6 +430,35 @@ export interface AudioAsset {
   /** constant offset (ms) applied when there are no sync points */
   offsetMs: number;
   createdAt: number;
+}
+
+export interface CoachSession {
+  at: number;
+  track: number;
+  accuracy: number;
+  hits: number;
+  wrong: number;
+  missed: number;
+  /** average timing: negative = early */
+  meanOffsetMs: number;
+  speed: number;
+  fromBar: number;
+  toBar: number;
+}
+
+/** a take recorded while playing along: the dry guitar, the rig, the song, or a re-amp of the DI */
+export interface TakeInfo {
+  /** all parts of one take share the group id */
+  group: string;
+  part: 'di' | 'rig' | 'song' | 'reamp';
+  /** song position (ms, tab timeline) at the first sample, when the song was playing */
+  songStartMs: number | null;
+  /** the DI and rig lag the song by this much in the files (input + output latency) */
+  latencyMs: number;
+  rigId?: string | null;
+  rigName?: string;
+  /** practice coach score for the take, when it ran */
+  accuracy?: number;
 }
 
 export type JobKind = 'separate' | 'align' | 'train-nam' | 'youtube' | 'transcribe';

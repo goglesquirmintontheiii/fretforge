@@ -4,6 +4,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { BLOCK_BY_TYPE, findBlock, newUid, type MidiMapping, type MidiTarget, type RigDoc } from '@fretforge/shared';
 import { RigSync, startBrowserRig, startNativeRig, type BrowserIo, type LiveBackend, type LiveMeters, type NativeIo } from '../audio/rigLive';
+import { browserTap, nativeTap, type BrowserTapSource, type LiveTap } from '../audio/liveTap';
 import { setEnabled, setParam, selectSnapshot } from './rigOps';
 import { rigsNow } from './rigStore';
 
@@ -12,7 +13,11 @@ export interface IoSettings {
   native: NativeIo;
   /** global output EQ: parametric EQ values by param id (see rigBlocks eq_param) */
   eq: Record<string, number> | null;
+  /** bus levels (linear): main and headphone mixes of the song and the rig */
+  mix?: { mainSong: number; mainRig: number; phonesSong: number; phonesRig: number };
 }
+
+export const DEFAULT_MIX = { mainSong: 1, mainRig: 1, phonesSong: 1, phonesRig: 1 };
 
 const IO_KEY = 'ff-io';
 export function loadIo(): IoSettings {
@@ -56,6 +61,12 @@ interface LiveCtx {
   blockIndex(uid: string): number | undefined;
   /** chain-level controls: 0 input dB, 1 output dB, 2 tuner, 10..19 global EQ */
   io(which: number, v: number): void;
+  /** main and headphone mixes (headphones: desktop engine only) */
+  mix: NonNullable<IoSettings['mix']>;
+  setMix(m: Partial<NonNullable<IoSettings['mix']>>): void;
+  /** the DI/rig/song stream for recording and the practice coach (shared; release when done) */
+  acquireTap(): LiveTap | null;
+  releaseTap(): void;
 }
 
 const Ctx = createContext<LiveCtx | null>(null);
@@ -83,6 +94,8 @@ export function LiveRigProvider({ children, onError }: { children: ReactNode; on
   const onRigSelect = useRef<((id: string) => void) | null>(null);
   const errRef = useRef(onError);
   errRef.current = onError;
+  const [mix, setMixState] = useState(() => ({ ...DEFAULT_MIX, ...(loadIo().mix ?? {}) }));
+  const tapRef = useRef<{ tap: LiveTap; users: number } | null>(null);
 
   useEffect(() => {
     window.fretforgeDesktop?.engine?.status().then((s) => setNativeAvailable(!!s.available)).catch(() => {});
@@ -90,6 +103,8 @@ export function LiveRigProvider({ children, onError }: { children: ReactNode; on
 
   const applyGlobalIo = (b: LiveBackend) => {
     const io = loadIo();
+    const m = { ...DEFAULT_MIX, ...(io.mix ?? {}) };
+    b.bus(0, m.mainSong); b.bus(1, m.mainRig); b.bus(2, m.phonesSong); b.bus(3, m.phonesRig);
     if (io.eq) {
       const ids = ['lowcut', 'lowfreq', 'lowgain', 'midfreq', 'midq', 'midgain', 'highfreq', 'highgain', 'highcut', 'level'];
       const def = BLOCK_BY_TYPE.get(31)!;
@@ -101,6 +116,8 @@ export function LiveRigProvider({ children, onError }: { children: ReactNode; on
     const b = backend.current;
     backend.current = null;
     sync.current = null;
+    tapRef.current?.tap.stop();
+    tapRef.current = null;
     setKind(null);
     setLatency(null);
     setTunerOn(false);
@@ -255,7 +272,32 @@ export function LiveRigProvider({ children, onError }: { children: ReactNode; on
     setOnRigSelect: (fn) => { onRigSelect.current = fn; },
     blockIndex: (uid) => sync.current?.blockIndex(uid),
     io: (which, v) => backend.current?.control('io', which, v),
-  }), [kind, starting, latencyMs, status, rig, tunerOn, learning, nativeAvailable, midiInputs, start, stop, play]);
+    mix,
+    setMix: (m) => {
+      const next = { ...mix, ...m };
+      setMixState(next);
+      saveIo({ ...loadIo(), mix: next });
+      const b = backend.current;
+      if (b) { b.bus(0, next.mainSong); b.bus(1, next.mainRig); b.bus(2, next.phonesSong); b.bus(3, next.phonesRig); }
+    },
+    acquireTap: () => {
+      const b = backend.current;
+      if (!b) return null;
+      if (!tapRef.current) {
+        const tap = b.kind === 'native'
+          ? nativeTap(Math.max(0, (status?.latencyMs ?? 0) - (status?.rigLatencyMs ?? 0)))
+          : browserTap(b as unknown as BrowserTapSource);
+        tapRef.current = { tap, users: 0 };
+      }
+      tapRef.current.users++;
+      return tapRef.current.tap;
+    },
+    releaseTap: () => {
+      const t = tapRef.current;
+      if (!t) return;
+      if (--t.users <= 0) { t.tap.stop(); tapRef.current = null; }
+    },
+  }), [kind, starting, latencyMs, status, rig, tunerOn, learning, nativeAvailable, midiInputs, start, stop, play, mix]);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

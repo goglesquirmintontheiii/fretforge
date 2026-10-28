@@ -14,3 +14,5 @@ packages/desktop/resources/
 smoke-shots/
 packages/engine/build/
 packages/desktop/native/
+__pycache__/
+*.pyc

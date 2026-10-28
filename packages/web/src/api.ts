@@ -1,7 +1,9 @@
 import type { TranscribeOptions, AmpSettings, AudioAsset, Comment, Instrument, Invite, Job, NamRole, NamSearchModel, NamSearchQuery, NamSearchResponse, NamSearchResult, NamSearchSource, OnlineResult, OnlineSearchResponse, Playlist, Prefs, PublicUser, Revision, RigDoc, RigFile, RigPreset, Role, Setlist, ShareLink, SongRecord, StatusResponse, SyncPoint, TextTab } from '@fretforge/shared';
 
+export interface YtdlpStatus { found: boolean; path: string | null; how: 'app' | 'system' | 'python' | null; version?: string; canInstall: boolean; reason?: string }
+
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) { super(message); }
+  constructor(message: string, readonly status: number, readonly code?: string) { super(message); }
 }
 
 async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -14,7 +16,7 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
   const isJson = res.headers.get('content-type')?.includes('application/json');
   if (!res.ok) {
     const body = isJson ? await res.json().catch(() => ({})) : {};
-    throw new ApiError((body as { error?: string }).error || `Request failed (${res.status})`, res.status);
+    throw new ApiError((body as { error?: string }).error || `Request failed (${res.status})`, res.status, (body as { code?: string }).code);
   }
   return (isJson ? res.json() : res.arrayBuffer()) as Promise<T>;
 }
@@ -121,9 +123,12 @@ export const api = {
   tone3000Tone: (id: string) => call<{ tone: NamSearchResult; models: NamSearchModel[] }>(`/api/nam/tone3000/tones/${id}`),
   tone3000Disconnect: () => call('/api/nam/tone3000/disconnect', { method: 'POST' }),
   namGithubSources: (sources: string[]) => call<{ github: string[] }>('/api/nam/github', json({ sources }, 'PUT')),
+  setDevice: (ids: string[], device: string) => call<{ files: RigFile[] }>('/api/rig/files/device', json({ ids, device })),
+  trainPair: (fd: FormData) => call<Job>('/api/rig/train-pair', { method: 'POST', body: fd }),
   trainNam: (wav: Blob, name: string, epochs: number) => call<Job>(`/api/rig/train?name=${encodeURIComponent(name)}&epochs=${epochs}`, bin(wav)),
 
   audio: (songId: string) => call<{ audio: AudioAsset[] }>(`/api/songs/${songId}/audio`),
+  uploadTakePart: (songId: string, fd: FormData) => call<{ added: AudioAsset[] }>(`/api/songs/${songId}/audio`, { method: 'POST', body: fd }),
   uploadAudio: (songId: string, fs: File[]) => call<{ added: AudioAsset[] }>(`/api/songs/${songId}/audio`, files(fs)),
   patchAudio: (id: string, p: Partial<AudioAsset> & { syncPoints?: SyncPoint[] }) => call<AudioAsset>(`/api/audio/${id}`, json(p, 'PATCH')),
   deleteAudio: (id: string) => call(`/api/audio/${id}`, { method: 'DELETE' }),
@@ -150,6 +155,8 @@ export const api = {
   jobs: () => call<{ jobs: Job[]; ai: StatusResponse['ai'] }>('/api/jobs'),
   cancelJob: (id: string) => call(`/api/jobs/${id}`, { method: 'DELETE' }),
   clearJobs: () => call('/api/jobs/clear', { method: 'POST' }),
+  ytdlp: () => call<YtdlpStatus>('/api/ytdlp'),
+  installYtdlp: () => call<YtdlpStatus>('/api/ytdlp/install', { method: 'POST' }),
   aiSetup: (device: string) => call<Job>('/api/ai/setup', json({ device })),
   aiCheck: () => call<StatusResponse['ai']>('/api/ai/check', { method: 'POST' }),
   song: (id: string) => call<SongRecord>(`/api/songs/${id}`),

@@ -8,11 +8,15 @@ import { putLocalRig, useRigs } from '../rig/rigStore';
 import { useLive } from '../rig/LiveRig';
 import type { TrackAudioState } from './useEngine';
 
-export function TrackRigDialog({ trackName, value, legacyAmp, state, currentBar, barCount, onChange, onEditLegacy, onRemoveLegacy, onClose }: {
+export function TrackRigDialog({ trackName, value, legacyAmp, state, currentBar, barCount, onChange, onEditLegacy, onRemoveLegacy, onClose, mode = 'track', sections = [] }: {
   trackName: string; value: TrackRig | undefined; legacyAmp: AmpSettings | undefined; state?: TrackAudioState;
   currentBar: number; barCount: number;
   onChange(v: TrackRig | null): void; onEditLegacy(): void; onRemoveLegacy(): void; onClose(): void;
+  /** 'live': the rig your own guitar plays through during this song */
+  mode?: 'track' | 'live';
+  sections?: { bar: number; text: string }[];
 }) {
+  const isLive = mode === 'live';
   const { toast } = useApp();
   const live = useLive();
   const rigs = useRigs() ?? [];
@@ -44,9 +48,9 @@ export function TrackRigDialog({ trackName, value, legacyAmp, state, currentBar,
       <div className="modal wide" role="dialog" aria-modal="true" aria-label={`Rig for ${trackName}`}>
         <header>
           <div style={{ minWidth: 0 }}>
-            <h2 style={{ fontSize: 18 }}>Rig · {trackName}</h2>
+            <h2 style={{ fontSize: 18 }}>{isLive ? 'Your rig for this song' : `Rig · ${trackName}`}</h2>
             <span className="muted" style={{ fontSize: 13 }}>
-              {state?.phase === 'amp' ? `Running the rig… ${Math.round(state.progress * 100)}%` : state?.phase === 'rendering' ? 'Rendering the track…' : state?.phase === 'error' ? state.message : 'The track’s synth sound runs through a rig from your rig editor'}
+              {isLive ? 'Your guitar plays through it live. It switches rigs or snapshots at the bars you set while the song plays.' : state?.phase === 'amp' ? `Running the rig… ${Math.round(state.progress * 100)}%` : state?.phase === 'rendering' ? 'Rendering the track…' : state?.phase === 'error' ? state.message : 'The track’s synth sound runs through a rig from your rig editor'}
             </span>
           </div>
           <div className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
@@ -55,7 +59,7 @@ export function TrackRigDialog({ trackName, value, legacyAmp, state, currentBar,
           </div>
         </header>
 
-        {legacyAmp && !value && (
+        {!isLive && legacyAmp && !value && (
           <div className="engstat" style={{ display: 'grid', gap: 8 }}>
             <span>This track uses an amp set up in Fretforge 0.4. It keeps playing as it is; turn it into a rig to add pedals and effects.</span>
             <div className="row">
@@ -92,9 +96,18 @@ export function TrackRigDialog({ trackName, value, legacyAmp, state, currentBar,
         <section style={{ display: 'grid', gap: 8 }}>
           <div className="row" style={{ justifyContent: 'space-between' }}>
             <b>Switches</b>
+            <span className="row" style={{ gap: 6 }}>
+            {sections.length > 0 && (
+              <button className="btn sm" title="One switch at the start of every section; pick a snapshot for each" onClick={() => {
+                const have = new Set(switches.map((x) => x.bar));
+                const add = sections.filter((x) => x.bar > 0 && !have.has(x.bar)).map((x) => ({ bar: x.bar, rigId: undefined, snapshot: rig ? tr.snapshot ?? rig.snapshot : undefined }));
+                set({ ...tr, switches: [...switches, ...add].sort((a, b) => a.bar - b.bar) });
+              }}>At every section</button>
+            )}
             <button className="btn sm" onClick={() => set({ ...tr, switches: [...switches, { bar: Math.min(barCount - 1, Math.max(0, currentBar)), rigId: undefined, snapshot: rig && rig.snapshots.length > 1 ? Math.min(rig.snapshots.length - 1, (tr.snapshot ?? rig.snapshot) + 1) : undefined }].sort((a, b) => a.bar - b.bar) })}>
               {Icon.plus({ size: 14 })} Switch at bar {Math.max(1, currentBar + 1)}
             </button>
+            </span>
           </div>
           {switches.length === 0 ? <p className="faint" style={{ margin: 0, fontSize: 13 }}>Change to another rig or snapshot from a bar on, for a chorus, a solo or a clean intro. Delays and reverbs ring out across the switch.</p> : (
             <div className="switches">
@@ -102,6 +115,7 @@ export function TrackRigDialog({ trackName, value, legacyAmp, state, currentBar,
                 const target = s.rigId !== undefined ? rigs.find((r) => r.id === s.rigId) : rig;
                 return (
                   <div className="row switchrow" key={i}>
+                    {sections.find((x) => x.bar === s.bar) && <span className="badge">{sections.find((x) => x.bar === s.bar)!.text}</span>}
                     <label className="row" style={{ gap: 6 }}>From bar
                       <input type="number" min={1} max={barCount} value={s.bar + 1} onChange={(e) => setSwitch(i, { bar: Math.max(0, Math.min(barCount - 1, (Number(e.target.value) || 1) - 1)) })} style={{ width: 72 }} aria-label="Bar" />
                     </label>
@@ -123,11 +137,13 @@ export function TrackRigDialog({ trackName, value, legacyAmp, state, currentBar,
 
         <div className="row" style={{ justifyContent: 'space-between' }}>
           {rig ? (
-            <button className="btn sm" onClick={async () => { live.play(rig); if (!live.running) await live.start(); toast(`Playing your guitar through “${rig.name}”`); }}>{Icon.power({ size: 14 })} Play along live with this rig</button>
+            <button className="btn sm" onClick={async () => { live.play(rig); if (!live.running) await live.start(); toast(`Playing your guitar through “${rig.name}”`); }}>{Icon.power({ size: 14 })} {isLive && live.running ? 'Play it now' : 'Play along live with this rig'}</button>
           ) : <span />}
           {(tr.rigId || switches.length > 0) && <button className="btn sm danger" onClick={() => { setTr({ rigId: null, enabled: true, switches: [] }); onChange(null); }}>Remove rig</button>}
         </div>
-        <p className="faint" style={{ margin: 0, fontSize: 12 }}>The track is rendered once and run through its rigs in the background, so playback stays light. Changes to a rig in the editor apply the next time the tab plays.</p>
+        <p className="faint" style={{ margin: 0, fontSize: 12 }}>{isLive
+          ? 'Snapshot changes are instant and delays and reverbs ring out; a different rig crossfades in. Switches happen while the song plays with the live rig on.'
+          : 'The track is rendered once and run through its rigs in the background, so playback stays light. Changes to a rig in the editor apply the next time the tab plays.'}</p>
       </div>
     </div>
   );

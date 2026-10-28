@@ -94,3 +94,37 @@ export function matchesAny(wanted: string[], have: string[]): boolean {
   const h = have.map((x) => x.toLowerCase());
   return wanted.some((w) => h.includes(w.toLowerCase()));
 }
+
+export interface CaptureDevice {
+  /** lower-case key: role + device name */
+  key: string;
+  name: string;
+  /** NAM role (amp, pedal, cab…) or 'ir' for cabinet impulse responses */
+  role: string;
+  kind: 'nam' | 'ir';
+  roles?: Record<string, number>;
+  /** the captures of this device, one per setting */
+  files: { id: string; setting: string }[];
+}
+
+/** NAM captures and IRs grouped by the device name people gave them (several settings per device). */
+export function captureDevices(files: { id: string; kind: string; role?: string; device?: string; setting?: string; name: string }[]): CaptureDevice[] {
+  const out = new Map<string, CaptureDevice>();
+  for (const f of files) {
+    if ((f.kind !== 'nam' && f.kind !== 'ir') || !f.device?.trim()) continue;
+    // one name is one device, even if its captures were tagged with different roles
+    const key = `${f.kind}:${f.device.trim().toLowerCase()}`;
+    const d = out.get(key) ?? { key, name: f.device.trim(), role: '', kind: f.kind, files: [], roles: {} as Record<string, number> };
+    const role = f.kind === 'ir' ? 'ir' : f.role ?? 'amp';
+    d.roles![role] = (d.roles![role] ?? 0) + 1;
+    d.files.push({ id: f.id, setting: f.setting?.trim() || f.name });
+    out.set(key, d);
+  }
+  for (const d of out.values()) {
+    // the device's role is what most of its captures are
+    d.role = Object.entries(d.roles!).sort((a, b) => b[1] - a[1])[0][0];
+    delete d.roles;
+  }
+  for (const d of out.values()) d.files.sort((a, b) => a.setting.localeCompare(b.setting, undefined, { numeric: true }));
+  return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
+}

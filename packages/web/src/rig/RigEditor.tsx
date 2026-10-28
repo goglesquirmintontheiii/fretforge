@@ -193,11 +193,12 @@ function Editor({ initial, canEdit, onCreate }: { initial: RigDoc; canEdit: bool
   const selNode = sel ? sel.list[sel.index] : null;
 
   const insertSlot = (): Slot => insertAt ?? (sel ? { ...sel.slot, index: sel.index + 1 } as Slot : { path: 0, index: rig.paths[0].nodes.length });
-  const addType = (type: number, extra?: { nam?: string; ir?: string }, slot = insertSlot()) => {
+  const addType = (type: number, extra?: { nam?: string; ir?: string; label?: string }, slot = insertSlot()) => {
     if (!canEdit) return;
     const def = BLOCK_BY_TYPE.get(type);
     const ext: Partial<RigBlock> = {};
     if (extra?.nam) ext.nam = extra.nam;
+    if (extra?.label) ext.label = extra.label;
     if (extra?.ir && def?.irSlots) ext.ir = [extra.ir, ...Array(def.irSlots - 1).fill(null)];
     const r = addBlockType(rig, slot, type, ext);
     apply(r.rig);

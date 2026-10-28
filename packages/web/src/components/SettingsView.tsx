@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ONLINE_SOURCES, type Invite, type PublicUser, type Role } from '@fretforge/shared';
-import { api } from '../api';
+import { api, type YtdlpStatus } from '../api';
+import { YtdlpInstall } from './YtdlpInstall';
 import { useApp } from '../lib/app';
 import { askConfirm } from '../lib/dialog';
 import { offlineSupported, offlineUsage } from '../lib/offline';
@@ -153,9 +154,19 @@ function AiSection({ owner }: { owner: boolean }) {
           </label>
         </>
       )}
+      <YtdlpRow />
       <div className="row"><a className="btn sm" href="#/jobs">All jobs</a></div>
     </section>
   );
+}
+
+function YtdlpRow() {
+  const [st, setSt] = useState<YtdlpStatus | null>(null);
+  const [n, setN] = useState(0);
+  useEffect(() => { api.ytdlp().then(setSt).catch(() => {}); }, [n]);
+  if (!st) return null;
+  if (!st.found) return <YtdlpInstall onInstalled={() => setN((x) => x + 1)} />;
+  return <div className="row" style={{ gap: 8 }}><span className="badge good">yt-dlp {st.version ?? ''}</span><span className="faint" style={{ fontSize: 13 }}>{st.how === 'app' ? 'Installed by Fretforge' : st.how === 'system' ? 'From your system' : 'In the AI tools’ Python'}</span></div>;
 }
 
 function OfflineSection() {

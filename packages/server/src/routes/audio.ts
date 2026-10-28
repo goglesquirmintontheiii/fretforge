@@ -1,12 +1,13 @@
 import { copyFileSync, createReadStream, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import type { FastifyInstance } from 'fastify';
-import type { AudioAsset, Job, RigFile, SyncPoint } from '@fretforge/shared';
+import { NAM_ROLES, type AudioAsset, type Job, type NamRole, type RigFile, type SyncPoint, type TakeInfo } from '@fretforge/shared';
 import type { Ctx } from '../app';
 import { httpError, requireRole } from '../auth';
 import { registerStems } from '../jobs';
 import { newId } from '../store';
 import { describeRigFile } from './rig';
+import { installYtdlp, requireYtdlp } from '../ytdlp';
 import { addSongsterrVideos, addVideo, youtubeId } from '../videos';
 import { fetchSongsterrRevision, fetchSongsterrVideos, songsterrIds } from '../providers/songsterr';
 
@@ -35,8 +36,10 @@ export function registerAudio(app: FastifyInstance, ctx: Ctx) {
       const r = job.result as { file?: string; name?: string };
       if (r.file && existsSync(r.file)) {
         const bytes = new Uint8Array(readFileSync(r.file));
-        const d = describeRigFile('model.nam', bytes);
-        const f: RigFile = { ...d, name: r.name || d.name, tags: [...d.tags, 'trained'], id: newId(), fileName: 'model.nam', bytes: bytes.length, addedBy: job.createdBy, createdAt: Date.now() };
+        const role = (job.params as { role?: NamRole }).role;
+        const d = describeRigFile('model.nam', bytes, role && NAM_ROLES.some((x) => x.id === role) ? role : undefined);
+        const jp = job.params as { device?: string; setting?: string };
+        const f: RigFile = { ...d, device: jp.device?.trim().slice(0, 100) || undefined, setting: jp.setting?.trim().slice(0, 100) || undefined, name: r.name || d.name, tags: [...d.tags, 'trained', ...((job.params as { mode?: string }).mode === 'pair' ? ['automated'] : [])], id: newId(), fileName: 'model.nam', bytes: bytes.length, addedBy: job.createdBy, createdAt: Date.now() };
         writeFileSync(join(cfg.dataDir, 'rig', f.id + '.nam'), bytes);
         store.putRigFile(f);
         job.result = { ...job.result, rigFileId: f.id };
@@ -69,13 +72,39 @@ export function registerAudio(app: FastifyInstance, ctx: Ctx) {
     return a;
   }
 
-  app.get('/api/songs/:id/audio', async (req) => ({ audio: store.audioFor(getSong((req.params as { id: string }).id).id) }));
+  // takes are personal: only their maker sees them
+  app.get('/api/songs/:id/audio', async (req) => ({ audio: store.audioFor(getSong((req.params as { id: string }).id).id).filter((a) => a.kind !== 'take' || a.createdBy === req.user?.id) }));
 
   app.post('/api/songs/:id/audio', async (req) => {
-    requireRole(req, 'owner', 'member');
+    // viewers may save their own takes; recordings for everyone need a member
+    const u = requireRole(req, 'owner', 'member', 'viewer');
     const s = getSong((req.params as { id: string }).id);
     const added: AudioAsset[] = [];
-    for await (const part of req.files()) {
+    // optional fields before the file: take (JSON TakeInfo) and name
+    let take: TakeInfo | undefined;
+    let name: string | undefined;
+    let durationMs: number | null = null;
+    for await (const part of req.parts()) {
+      if (part.type === 'field') {
+        if (part.fieldname === 'take') {
+          try {
+            const t = JSON.parse(String(part.value)) as Partial<TakeInfo>;
+            if (typeof t.group === 'string' && /^[\w-]{4,40}$/.test(t.group) && ['di', 'rig', 'song', 'reamp'].includes(t.part as string)) {
+              take = {
+                group: t.group, part: t.part as TakeInfo['part'],
+                songStartMs: typeof t.songStartMs === 'number' && Number.isFinite(t.songStartMs) ? t.songStartMs : null,
+                latencyMs: typeof t.latencyMs === 'number' && Number.isFinite(t.latencyMs) ? Math.max(0, Math.min(2000, t.latencyMs)) : 0,
+                rigId: typeof t.rigId === 'string' ? t.rigId : null,
+                rigName: typeof t.rigName === 'string' ? t.rigName.slice(0, 80) : undefined,
+                accuracy: typeof t.accuracy === 'number' && Number.isFinite(t.accuracy) ? Math.max(0, Math.min(1, t.accuracy)) : undefined,
+              };
+            }
+          } catch { /* ignore a bad field */ }
+        } else if (part.fieldname === 'name') name = String(part.value).trim().slice(0, 120) || undefined;
+        else if (part.fieldname === 'durationMs') { const d = Number(part.value); if (d > 0 && Number.isFinite(d)) durationMs = Math.round(d); }
+        continue;
+      }
+      if (!take && u.role === 'viewer') throw httpError(403, 'Viewers can’t add recordings.');
       const ext = extname(part.filename).toLowerCase();
       if (!AUDIO_TYPES[ext]) throw httpError(415, 'Add FLAC, WAV, MP3, AAC/M4A, OGG/Opus or WebM audio.');
       const buf = await part.toBuffer();
@@ -84,8 +113,8 @@ export function registerAudio(app: FastifyInstance, ctx: Ctx) {
       mkdirSync(join(cfg.dataDir, 'audio', s.id), { recursive: true });
       writeFileSync(join(cfg.dataDir, rel), buf);
       const a: AudioAsset = {
-        id, songId: s.id, kind: 'original', name: part.filename.replace(/\.[^.]+$/, '').slice(0, 120), file: rel, mime: AUDIO_TYPES[ext],
-        bytes: buf.length, durationMs: null, gainDb: 0, syncPoints: [], offsetMs: 0, createdAt: Date.now(),
+        id, songId: s.id, kind: take ? 'take' : 'original', name: name ?? part.filename.replace(/\.[^.]+$/, '').slice(0, 120), file: rel, mime: AUDIO_TYPES[ext],
+        bytes: buf.length, durationMs, gainDb: 0, syncPoints: [], offsetMs: 0, createdAt: Date.now(), take, createdBy: take ? u.id : undefined,
       };
       store.putAudio(a);
       added.push(a);
@@ -153,8 +182,9 @@ export function registerAudio(app: FastifyInstance, ctx: Ctx) {
   });
 
   app.delete('/api/audio/:id', async (req) => {
-    requireRole(req, 'owner', 'member');
+    const u = requireRole(req, 'owner', 'member', 'viewer');
     const a = getAudio((req.params as { id: string }).id);
+    if (a.kind === 'take' ? a.createdBy !== u.id : u.role === 'viewer') throw httpError(403, 'You can’t remove this.');
     for (const x of [a, ...store.audioFor(a.songId).filter((s) => s.parentId === a.id)]) {
       if (x.file) try { unlinkSync(join(cfg.dataDir, x.file)); } catch { /* ignore */ }
       store.removeAudio(x.id);
@@ -201,6 +231,7 @@ export function registerAudio(app: FastifyInstance, ctx: Ctx) {
     const s = getSong((req.params as { id: string }).id);
     const { url } = (req.body ?? {}) as { url?: string };
     if (!url || !/^https?:\/\/(www\.|m\.|music\.)?(youtube\.com|youtu\.be)\//.test(url)) throw httpError(400, 'Paste a YouTube link.');
+    requireYtdlp(jobs);
     return jobs.add('youtube', `Get audio for “${s.title}”`, { url, node: process.execPath }, { songId: s.id, createdBy: u.id });
   });
 
@@ -232,7 +263,33 @@ export function registerAudio(app: FastifyInstance, ctx: Ctx) {
     const dir = join(cfg.dataDir, 'jobs', 'train-' + id);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'output.wav'), body);
-    return jobs.add('train-nam', `Train “${q.name || 'New capture'}”`, { output: join(dir, 'output.wav'), name: q.name || 'New capture', architecture: q.architecture || 'standard', epochs: Number(q.epochs) || 100 }, { createdBy: u.id });
+    return jobs.add('train-nam', `Train “${q.name || 'New capture'}”`, { output: join(dir, 'output.wav'), name: q.name || 'New capture', architecture: q.architecture || 'standard', epochs: Number(q.epochs) || 100, role: q.role || undefined, device: q.device || undefined, setting: q.setting || undefined }, { createdBy: u.id });
+  });
+
+  /**
+   * Automated capture: what was played out (alignment clicks + your DI) and what came back
+   * through the gear, recorded on the same input. The worker lines them up and trains on them.
+   */
+  app.post('/api/rig/train-pair', async (req) => {
+    const u = requireRole(req, 'owner', 'member');
+    const id = newId();
+    const dir = join(cfg.dataDir, 'jobs', 'train-' + id);
+    mkdirSync(dir, { recursive: true });
+    const f: Record<string, string> = {};
+    const files: Record<string, string> = {};
+    for await (const part of req.parts()) {
+      if (part.type === 'field') { f[part.fieldname] = String(part.value); continue; }
+      if (part.fieldname !== 'played' && part.fieldname !== 'returned') continue;
+      const path = join(dir, `${part.fieldname}.wav`);
+      writeFileSync(path, await part.toBuffer());
+      files[part.fieldname] = path;
+    }
+    if (!files.played || !files.returned) throw httpError(400, 'Send the played and the returned audio.');
+    const name = (f.name || 'New capture').trim().slice(0, 80);
+    return jobs.add('train-nam', `Train “${name}”`, {
+      mode: 'pair', input: files.played, output: files.returned, name, epochs: Math.max(5, Math.min(1000, Number(f.epochs) || 100)),
+      markers: Number(f.markers) || 0, markerSpacing: Number(f.markerSpacing) || 0, role: f.role || undefined, device: f.device || undefined, setting: f.setting || undefined,
+    }, { createdBy: u.id });
   });
 
   app.delete('/api/jobs/:id', async (req) => {
@@ -251,6 +308,13 @@ export function registerAudio(app: FastifyInstance, ctx: Ctx) {
     const u = requireRole(req, 'owner');
     const { device = 'auto' } = (req.body ?? {}) as { device?: string };
     return jobs.add('setup' as never, 'Install the AI tools', { device }, { createdBy: u.id });
+  });
+
+  // yt-dlp for YouTube audio: status and the one-click install
+  app.get('/api/ytdlp', async () => jobs.ytdlpStatus());
+  app.post('/api/ytdlp/install', async (req) => {
+    requireRole(req, 'owner');
+    try { return await installYtdlp(cfg.dataDir, ctx.providers.fetch); } catch (e) { throw httpError(502, (e as Error).message); }
   });
 
   app.post('/api/ai/check', async (req) => {

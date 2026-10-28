@@ -47,6 +47,8 @@ export interface LiveBackend {
   kind: 'native' | 'browser';
   loadGraph(p: GraphPayload): Promise<void>;
   control(op: 'param' | 'enable' | 'trigger' | 'tempo' | 'quality' | 'io', a: number, b?: number, c?: number): void;
+  /** mix buses: 0 main song, 1 main rig, 2 headphones song, 3 headphones rig (linear gain) */
+  bus(which: number, gain: number): void;
   meters(): Promise<LiveMeters>;
   stop(): Promise<void>;
   sampleRate: number;
@@ -55,7 +57,7 @@ export interface LiveBackend {
 // ------------------------------------------------------------------ browser backend
 export interface BrowserIo { inputId?: string; outputId?: string; channel?: number }
 
-export async function startBrowserRig(io: BrowserIo, onError: (m: string) => void): Promise<LiveBackend & { latencyMs: number }> {
+export async function startBrowserRig(io: BrowserIo, onError: (m: string) => void): Promise<LiveBackend & { latencyMs: number; input: AudioNode; output: AudioNode; ctx: AudioContext; inputLatencyMs: number; outputLatencyMs: number }> {
   const ctx = await audioContext();
   await ctx.resume();
   const sinkCtx = ctx as AudioContext & { setSinkId?: (id: string) => Promise<void> };
@@ -79,47 +81,69 @@ export async function startBrowserRig(io: BrowserIo, onError: (m: string) => voi
     void engineWasm().then((w) => node.port.postMessage({ type: 'init', wasm: w.slice(0) }));
   });
   const src = ctx.createMediaStreamSource(stream);
-  // pick one channel of a multi-input interface (guitar in input 2, say)
+  // the rig's level in the mix (the song has its own master)
+  const rigGain = ctx.createGain();
+  // pick one channel of a multi-input interface (guitar in input 2, say); `di` is the dry guitar
+  const di = ctx.createGain();
+  di.channelCount = 1;
+  di.channelCountMode = 'explicit';
+  di.channelInterpretation = 'discrete';
   const ch = io.channel ?? 0;
   if (ch > 0) {
     const split = ctx.createChannelSplitter(2);
     src.connect(split);
-    split.connect(node, Math.min(1, ch), 0);
-  } else src.connect(node);
-  node.connect(ctx.destination);
+    split.connect(di, Math.min(1, ch), 0);
+  } else src.connect(di);
+  di.connect(node);
+  node.connect(rigGain);
+  rigGain.connect(ctx.destination);
   const trackLatency = (stream.getAudioTracks()[0]?.getSettings() as { latency?: number }).latency ?? 0;
   const latencyMs = Math.round(((ctx.baseLatency || 0) + ((ctx as AudioContext & { outputLatency?: number }).outputLatency || 0) + trackLatency + 128 / ctx.sampleRate) * 1000);
   return {
     kind: 'browser',
     sampleRate: ctx.sampleRate,
     latencyMs,
+    input: di,
+    output: rigGain,
+    ctx,
+    inputLatencyMs: trackLatency * 1000 + (ctx.baseLatency || 0) * 500,
+    outputLatencyMs: (((ctx as AudioContext & { outputLatency?: number }).outputLatency || 0) + (ctx.baseLatency || 0) / 2) * 1000,
     loadGraph: (p) => new Promise<void>((resolve, reject) => {
       loaded.push((ok, msg) => (ok ? resolve() : reject(new Error(msg))));
       node.port.postMessage({ type: 'graph', ...p });
     }),
     control: (op, a, b, c) => node.port.postMessage({ type: 'control', op, a, b, c }),
+    bus: (which, gain) => { if (which === 1) rigGain.gain.setTargetAtTime(gain, ctx.currentTime, 0.02); },
     meters: async () => { const m = last; last = { ...last, input: 0, output: 0 }; return m; },
     stop: async () => {
       stream.getTracks().forEach((t) => t.stop());
       src.disconnect();
+      di.disconnect();
       node.disconnect();
+      rigGain.disconnect();
       node.port.close();
     },
   };
 }
 
 // ------------------------------------------------------------------ native backend (desktop)
-export interface NativeIo { inputs?: string[]; outputs?: string[]; connect?: boolean; latency?: number }
+export interface NativeIo { inputs?: string[]; outputs?: string[]; /** headphone outputs [L, R] (the second mix) */ phones?: string[]; connect?: boolean; latency?: number }
 
 export async function startNativeRig(io: NativeIo): Promise<LiveBackend & { status: NativeEngineStatus }> {
   const eng = window.fretforgeDesktop!.engine!;
   const status = await eng.start({ connect: io.connect !== false, inputs: io.inputs ?? [], outputs: io.outputs ?? [], latency: io.latency });
+  if (io.connect !== false) {
+    const [l, r] = io.phones ?? [];
+    if (l) await eng.connect('phones_L', l, true).catch(() => false);
+    if (r) await eng.connect('phones_R', r, true).catch(() => false);
+  }
   return {
     kind: 'native',
     sampleRate: status.sampleRate ?? 48000,
     status,
     loadGraph: async (p) => { await eng.loadGraph(p.desc, p.nams, p.irs); },
     control: (op, a, b, c) => eng.control(op, a, b, c),
+    bus: (which, gain) => eng.control('bus', which, gain),
     meters: () => eng.meters(),
     stop: () => eng.stop(),
   };

@@ -34,7 +34,7 @@ jobs:
       - name: Install Chromium for the smoke test
         run: npx playwright install --with-deps chromium
       - name: End-to-end smoke test
-        run: node scripts/smoke.mjs --shots smoke-shots
+        run: node scripts/smoke.mjs --shots smoke-shots && node scripts/smoke-gear.mjs smoke-shots/gear
       - uses: actions/upload-artifact@v4
         if: always()
         with:

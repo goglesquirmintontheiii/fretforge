@@ -97,13 +97,17 @@ function NativeIo({ io, setIo }: { io: IoSettings; setIo(v: IoSettings): void })
   const own = (p: string) => p.startsWith(`${live.status?.client ?? 'Fretforge'}:`);
   const sources = (ports?.sources ?? []).filter((p) => !own(p));
   const sinks = (ports?.sinks ?? []).filter((p) => !own(p));
-  const toggle = async (ours: 'in' | 'out_L' | 'out_R', other: string, on: boolean) => {
+  const toggle = async (ours: 'in' | 'out_L' | 'out_R' | 'phones_L' | 'phones_R', other: string, on: boolean) => {
     const ok = await eng.connect(ours, other, on).catch(() => false);
     if (!ok) toast('JACK didn’t make that connection.');
     await refresh();
     // remember the choice for the next start
     if (ours === 'in') set({ inputs: on ? [...new Set([...(n.inputs ?? []), other])] : (n.inputs ?? []).filter((x) => x !== other) });
-    else {
+    else if (ours === 'phones_L' || ours === 'phones_R') {
+      const ph = [...(n.phones ?? [])];
+      ph[ours === 'phones_L' ? 0 : 1] = on ? other : '';
+      set({ phones: ph });
+    } else {
       const outs = [...(n.outputs ?? [])];
       outs[ours === 'out_L' ? 0 : 1] = on ? other : '';
       set({ outputs: outs });
@@ -113,7 +117,7 @@ function NativeIo({ io, setIo }: { io: IoSettings; setIo(v: IoSettings): void })
     <section className="iosec">
       <h3>Low-latency engine</h3>
       <p className="muted" style={{ margin: 0, fontSize: 13 }}>
-        Fretforge shows up as a JACK/PipeWire client with ports <span className="mono">in</span>, <span className="mono">out_L</span>, <span className="mono">out_R</span> and <span className="mono">midi_in</span>.
+        Fretforge shows up as a JACK/PipeWire client with ports <span className="mono">in</span>, <span className="mono">out_L</span>, <span className="mono">out_R</span>, <span className="mono">phones_L</span>, <span className="mono">phones_R</span> (a second mix for headphones, set in a song’s Play along panel) and <span className="mono">midi_in</span>.
         Route them here, or in Helvum, qpwgraph or any patchbay: other programs can feed the rig and take its output.
       </p>
       <div className="row">
@@ -129,6 +133,8 @@ function NativeIo({ io, setIo }: { io: IoSettings; setIo(v: IoSettings): void })
           <PortList title="Input (guitar)" ports={sources} connected={conns.in ?? []} onToggle={(p, on) => toggle('in', p, on)} physical={ports?.physicalSources ?? []} />
           <PortList title="Output left" ports={sinks} connected={conns.out_L ?? []} onToggle={(p, on) => toggle('out_L', p, on)} physical={ports?.physicalSinks ?? []} />
           <PortList title="Output right" ports={sinks} connected={conns.out_R ?? []} onToggle={(p, on) => toggle('out_R', p, on)} physical={ports?.physicalSinks ?? []} />
+          <PortList title="Headphones left" ports={sinks} connected={conns.phones_L ?? []} onToggle={(p, on) => toggle('phones_L', p, on)} physical={ports?.physicalSinks ?? []} />
+          <PortList title="Headphones right" ports={sinks} connected={conns.phones_R ?? []} onToggle={(p, on) => toggle('phones_R', p, on)} physical={ports?.physicalSinks ?? []} />
         </div>
       )}
       {running && (

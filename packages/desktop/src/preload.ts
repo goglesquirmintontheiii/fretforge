@@ -15,6 +15,12 @@ contextBridge.exposeInMainWorld('fretforgeDesktop', {
     control: (op: string, a: number, b?: number, c?: number) => ipcRenderer.send('ff:engine:control', op, a, b, c),
     meters: () => ipcRenderer.invoke('ff:engine:meters'),
     measureLatency: () => ipcRenderer.invoke('ff:engine:measureLatency'),
+    playerSource: (slot: number, a: Int16Array | null, b: Int16Array | null, scale: number) => ipcRenderer.invoke('ff:engine:playerSource', slot, a, b, scale),
+    playerClicks: (frames: Float64Array, accent: Uint8Array) => ipcRenderer.invoke('ff:engine:playerClicks', frames, accent),
+    playerCmd: (op: string, a?: number, b?: number, c?: number, d?: number) => ipcRenderer.send('ff:engine:playerCmd', op, a, b, c, d),
+    playerState: () => ipcRenderer.invoke('ff:engine:playerState'),
+    record: (on: boolean) => ipcRenderer.invoke('ff:engine:record', on),
+    takeRecording: () => ipcRenderer.invoke('ff:engine:takeRecording'),
   },
   tone3000: {
     setCapture: (on: boolean) => ipcRenderer.send('ff:t3k:capture', on),

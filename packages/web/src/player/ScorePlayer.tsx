@@ -10,6 +10,10 @@ import { useWakeLock } from '../lib/wakeLock';
 import { MenuButton } from '../components/AppMenu';
 import { VideoDock } from './VideoDock';
 import { AiPanel, SimplifyDialog } from './AiPanel';
+import { PlayAlongPanel } from './PlayAlongPanel';
+import { CoachPanel, useCoach } from './CoachPanel';
+import { useLive } from '../rig/LiveRig';
+import { rigAtBar, type CoachSession } from '@fretforge/shared';
 import { Icon, InstrumentIcon } from '../components/icons';
 import { ChordDiagram } from '../components/ChordDiagram';
 import { Fretboard } from './Fretboard';
@@ -33,7 +37,7 @@ type Mix = Record<number, { volume: number; mute: boolean; solo: boolean }>;
 type View = 'tab' | 'notation' | 'both';
 const INSTRUMENT_STEM: Record<string, string> = { guitar: 'guitar', bass: 'bass', drums: 'drums', keys: 'piano', vocals: 'vocals', other: 'other' };
 
-type SideTab = 'mixer' | 'chords' | 'lyrics' | 'audio' | 'comments' | 'ai';
+type SideTab = 'mixer' | 'chords' | 'lyrics' | 'audio' | 'comments' | 'ai' | 'play' | 'coach';
 interface Trainer { on: boolean; start: number; step: number; target: number; passes: number }
 
 const SPEED_PRESETS = [0.25, 0.5, 0.75, 0.9, 1];
@@ -64,7 +68,7 @@ function trackBeats(score: alphaTab.model.Score, track: number): alphaTab.model.
   return staff.bars.flatMap((b) => b.voices[0]?.beats ?? []);
 }
 
-export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, loadFile, onSongChange }: {
+export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, loadFile, onSongChange, onFinished, head }: {
   song: SongRecord; onClose: () => void; onPatch: (p: Partial<SongRecord>) => void; onToast: (m: string) => void;
   /** open in the tab editor */
   edit?: boolean;
@@ -72,6 +76,10 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
   readOnly?: boolean;
   loadFile?: () => Promise<ArrayBuffer>;
   onSongChange?: (s: SongRecord) => void;
+  /** the song played to its end (gig mode loads the next one) */
+  onFinished?: () => void;
+  /** a full-width row under the title (the gig mode setlist bar) */
+  head?: React.ReactNode;
 }) {
   const { prefs, setPrefs, user } = useApp();
   const canEdit = !readOnly && user?.role !== 'viewer';
@@ -132,7 +140,9 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
   const loadAudio = useCallback(() => { if (!readOnly) api.audio(song.id).then((r) => setAudio(r.audio)).catch(() => {}); }, [song.id, readOnly]);
   useEffect(() => { loadAudio(); }, [loadAudio]);
   const [videoId, setVideoId] = useState<string | null>(p.videoId ?? null);
-  const files = useMemo(() => audio.filter((x) => x.kind !== 'video'), [audio]);
+  const files = useMemo(() => audio.filter((x) => x.kind === 'original' || x.kind === 'stem'), [audio]);
+  const takes = useMemo(() => audio.filter((x) => x.kind === 'take'), [audio]);
+  const media = useMemo(() => audio.filter((x) => x.kind !== 'take'), [audio]);
   const videos = useMemo(() => audio.filter((x) => x.kind === 'video'), [audio]);
   const video = videos.find((v) => v.id === videoId) ?? videos[0] ?? null;
   const effSource: PlaySource = playSource === 'recording' && files.length ? 'recording' : playSource === 'video' && video ? 'video' : 'tab';
@@ -158,11 +168,47 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
   }, [effSource, song.tracks.length, stemOf, trackSources, mix]);
 
   const [editingNow, setEditingNow] = useState(!!edit);
+  // ---- play along: the live rig plays in the same clock as the song
+  const live = useLive();
+  const [liveRig, setLiveRig] = useState<TrackRig | undefined>(p.liveRig);
+  const [liveRigOpen, setLiveRigOpen] = useState(false);
+  const [coachOn, setCoachOn] = useState(false);
+  const [coachWait, setCoachWait] = useState(false);
+  const [coachHistory, setCoachHistory] = useState<CoachSession[]>(() => p.coachHistory ?? []);
+  const [coachOffset, setCoachOffsetState] = useState(() => { try { return Number(localStorage.getItem('ff-coach-offset')) || 0; } catch { return 0; } });
+  const setCoachOffset = (v: number) => { setCoachOffsetState(v); try { localStorage.setItem('ff-coach-offset', String(v)); } catch { /* fine */ } };
+  const skipCountIn = useRef(false);
+  const playAlong = live.running && !editingNow && !readOnly;
   const engine = useEngine({
-    apiRef, score, scoreKey, song, amps: editingNow ? {} : amps, trackRigs: editingNow ? {} : trackRigs, rigs: rigList, playSource: editingNow ? 'tab' : effSource, audio: editingNow ? [] : files, video: editingNow ? null : video, trackStems: editingNow ? {} : trackStems, mix, audioMix, master, speed, pitch, metro, metroVol, countIn, looping, range, onToast,
+    forceMix: playAlong, nativeSong: playAlong && live.kind === 'native', skipCountIn,
+    apiRef, score, scoreKey, song, amps: editingNow ? {} : amps, trackRigs: editingNow ? {} : trackRigs, rigs: rigList, playSource: editingNow ? 'tab' : effSource, audio: editingNow ? [] : files, video: editingNow ? null : video, trackStems: editingNow ? {} : trackStems, mix, audioMix, master, speed, pitch, metro, metroVol, countIn, looping, range, onToast, onEnded: () => finishedRef.current?.(),
   });
+  const finishedRef = useRef(onFinished);
+  finishedRef.current = onFinished;
   const engineOn = useRef(false);
   engineOn.current = engine.active;
+
+  // the song's own live rig: switch rigs and snapshots at bars while it plays
+  const liveApplied = useRef('');
+  useEffect(() => {
+    if (!live.running || !liveRig || liveRig.enabled === false || editingNow) return;
+    const at = rigAtBar(liveRig, bar);
+    const rig = at.rigId ? rigList.find((r) => r.id === at.rigId) : undefined;
+    if (!rig) return;
+    const snap = Math.min(rig.snapshots.length - 1, Math.max(0, at.snapshot ?? rig.snapshot));
+    const key = `${rig.id}:${snap}:${rig.updatedAt ?? ''}`;
+    if (key === liveApplied.current && live.rig?.id === rig.id) return;
+    liveApplied.current = key;
+    live.play({ ...rig, snapshot: snap });
+  }, [bar, liveRig, live.running, rigList, editingNow]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const coach = useCoach({
+    on: coachOn && !editingNow, wait: coachWait, api: apiRef.current, score, timeline: engine.timeline, scoreKey, track: focus,
+    toSynth: engine.toSynth, offsetMs: coachOffset, playing, speed, engineActive: engine.active,
+    onPause: () => apiRef.current?.pause(),
+    onPlay: () => { skipCountIn.current = true; apiRef.current?.play(); },
+    onSession: (sess) => setCoachHistory((h) => [...h, sess].slice(-40)),
+  });
 
   // Mirror state into a ref so alphaTab event handlers see current values
   const st = useRef({ speed, master, metro, metroVol, countIn, looping, mix, pitch, trainer, focus, visible, range, playing });
@@ -298,6 +344,26 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
     return a.postRenderFinished.on(place);
   }, [showUncertain, song.ai, song.revision]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // practice coach: a dot under each beat it judged (green right, red wrong note, grey missed)
+  const [coachDots, setCoachDots] = useState<{ x: number; y: number; c: string }[]>([]);
+  useEffect(() => {
+    const a = apiRef.current;
+    if (!a || !coach.on || !coach.marks.size) { setCoachDots([]); return; }
+    const place = () => {
+      const dots: { x: number; y: number; c: string }[] = [];
+      for (const sys of a.boundsLookup?.staffSystems ?? []) for (const mb of sys.bars) for (const bb of mb.bars) for (const beat of bb.beats) {
+        const b = beat.beat;
+        if (b.voice.index !== 0) continue;
+        const st = coach.marks.get(`${b.voice.bar.staff.track.index}:${b.voice.bar.index}:${b.index}`);
+        if (!st) continue;
+        dots.push({ x: beat.realBounds.x + beat.realBounds.w / 2, y: bb.realBounds.y + bb.realBounds.h + 6, c: st });
+      }
+      setCoachDots(dots);
+    };
+    place();
+    return a.postRenderFinished.on(place);
+  }, [coach.marks, coach.on]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // create alphaTab once
   useEffect(() => {
     const host = hostRef.current, wrap = wrapRef.current;
@@ -346,6 +412,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
       setScoreKey(`${song.id}:${song.hash}:${song.revision ?? 0}:${transposeRef.current}:${editVersion.current}`);
     });
     a.playerStateChanged.on((e) => setPlaying(e.state === alphaTab.synth.PlayerState.Playing));
+    a.playerFinished.on(() => { if (!engineOn.current && !st.current.looping) finishedRef.current?.(); });
     let lastUi = 0;
     a.playerPositionChanged.on((e) => {
       const c = st.current;
@@ -457,8 +524,8 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
 
   // persist practice state
   useEffect(() => {
-    onPatch({ practice: { speed, loop: range, mixer: mix, masterVolume: master, transpose, pitchShift: pitch, visibleTracks: visible, view, capo, amps, trackRigs, playSource, audioMix, videoId: videoId ?? undefined, trackSources } });
-  }, [speed, range, mix, master, transpose, pitch, visible, view, capo, amps, trackRigs, playSource, audioMix, videoId, trackSources, onPatch]);
+    onPatch({ practice: { speed, loop: range, mixer: mix, masterVolume: master, transpose, pitchShift: pitch, visibleTracks: visible, view, capo, amps, trackRigs, playSource, audioMix, videoId: videoId ?? undefined, trackSources, liveRig, coachHistory } });
+  }, [speed, range, mix, master, transpose, pitch, visible, view, capo, amps, trackRigs, playSource, audioMix, videoId, trackSources, liveRig, coachHistory, onPatch]);
 
   // ------------------------------------------------------------------ actions
   const a = () => apiRef.current;
@@ -702,6 +769,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
         {readOnly && (
           <button className="btn sm" onClick={() => { const a = apiRef.current, sc = scoreRef.current; if (a && sc) printScore(sc, visible, song.title).catch(() => {}); }}>Print / PDF</button>
         )}
+        {head}
       </div>
 
       <div className="player-body">
@@ -712,6 +780,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
             <div ref={hostRef} />
             {editor.overlay}
             {markBoxes.map((b, i) => <div key={i} className="diffmark" style={{ left: b.x, top: b.y, width: b.w, height: b.h }} />)}
+            {coachDots.map((d, i) => <div key={`c${i}`} className={`coachdot ${d.c}`} style={{ left: d.x - 4, top: d.y }} />)}
             {uncertainBoxes.map((b, i) => <div key={`u${i}`} className="uncertain" title="The AI wasn’t sure of this note" style={{ left: b.x, top: b.y, width: b.w, height: b.h }} />)}
           </div>
           {rendering && <div className="loading-over"><span className="spinner" /><span>{rendering}</span></div>}
@@ -722,11 +791,24 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
             <button role="tab" aria-selected={side === 'mixer'} onClick={() => setSide('mixer')}>Mixer</button>
             <button role="tab" aria-selected={side === 'chords'} onClick={() => setSide('chords')}>Chords</button>
             {hasLyricsTrack >= 0 && <button role="tab" aria-selected={side === 'lyrics'} onClick={() => setSide('lyrics')}>Lyrics</button>}
-            {!readOnly && <button role="tab" aria-selected={side === 'audio'} onClick={() => setSide('audio')}>Audio{audio.length ? <span className="dot" aria-label={`${audio.length} recordings`} /> : null}</button>}
+            {!readOnly && <button role="tab" aria-selected={side === 'audio'} onClick={() => setSide('audio')}>Audio{media.length ? <span className="dot" aria-label={`${media.length} recordings`} /> : null}</button>}
+            {!readOnly && <button role="tab" aria-selected={side === 'play'} onClick={() => setSide('play')}>Play along{live.running ? <span className="dot" aria-label="live rig on" /> : null}</button>}
+            {!readOnly && <button role="tab" aria-selected={side === 'coach'} onClick={() => setSide('coach')}>Coach</button>}
             {!readOnly && song.ai && <button role="tab" aria-selected={side === 'ai'} onClick={() => setSide('ai')}>AI</button>}
             {!readOnly && <button role="tab" aria-selected={side === 'comments'} onClick={() => setSide('comments')}>Notes{song.commentCount ? <span className="dot" aria-label={`${song.commentCount} comments`} /> : null}</button>}
             {window.innerWidth <= 960 && <button aria-label="Close panel" onClick={() => setSide(null)} style={{ flex: '0 0 44px' }}>{Icon.close({ size: 16 })}</button>}
           </div>
+          {side === 'play' && !readOnly && (
+            <PlayAlongPanel song={song} liveRig={liveRig} rigs={rigList} onEditLiveRig={() => setLiveRigOpen(true)} takes={takes} onTakesChanged={loadAudio}
+              songReady={engine.active && !engine.preparing} preparing={engine.preparing} playing={playing}
+              onPlay={() => apiRef.current?.play()} onPause={() => apiRef.current?.pause()} tempo={score?.tempo ?? 120}
+              accuracy={coach.on && coach.stats ? coach.stats.accuracy : null}
+              files={files} onUseLive={(rigId) => { setLiveRig({ ...(liveRig ?? { enabled: true }), enabled: true, rigId, snapshot: 0 }); liveApplied.current = ''; }} />
+          )}
+          {side === 'coach' && !readOnly && (
+            <CoachPanel song={song} state={coach} on={coachOn} setOn={setCoachOn} wait={coachWait} setWait={setCoachWait}
+              history={coachHistory.filter((h) => h.track === focus)} trackName={tracks[focus]?.name || `Track ${focus + 1}`} offsetMs={coachOffset} setOffsetMs={setCoachOffset} />
+          )}
           {side === 'ai' && song.ai && (
             <AiPanel song={song} bar={bar} onSongChange={(s2) => onSongChange?.(s2)} showUncertain={showUncertain} setShowUncertain={setShowUncertain}
               playSource={effSource} setPlaySource={setPlaySource} hasRecording={files.length > 0}
@@ -746,7 +828,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
           )}
           {side === 'mixer' && (
             <div className="side-pane">
-              {audio.length > 0 && (
+              {media.length > 0 && (
                 <div className="chips" role="group" aria-label="What plays">
                   <button className="chip" aria-pressed={effSource === 'tab'} onClick={() => setPlaySource('tab')}>Tab sound</button>
                   {files.length > 0 && <button className="chip" aria-pressed={effSource === 'recording'} onClick={() => setPlaySource('recording')}>Recording</button>}
@@ -757,6 +839,21 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
                 <div className="engstat" role="status"><span className="spinner" /> <span className="grow">{engine.preparing}…</span><span className="mono faint">{Math.round(engine.progress * 100)}%</span></div>
               )}
               <div className="mix">
+                {playAlong && (
+                  <div className="mixrow rigrow">
+                    <div style={{ minWidth: 0, display: 'flex', gap: 7, alignItems: 'center' }}>
+                      {Icon.amp({ size: 15 })}
+                      <div style={{ minWidth: 0 }}>
+                        <div className="nm">Your rig</div>
+                        <div className="sub">{live.rig?.name ?? 'Live input'} <span className="db">{gainToDb(live.mix.mainRig)}</span></div>
+                      </div>
+                    </div>
+                    <span />
+                    <span />
+                    <input type="range" min={0} max={1.5} step={0.01} value={live.mix.mainRig} aria-label="Your rig volume"
+                      onChange={(e) => live.setMix({ mainRig: Number(e.target.value) })} onDoubleClick={() => live.setMix({ mainRig: 1 })} />
+                  </div>
+                )}
                 {effSource === 'tab' && tracks.map((t) => {
                   const m = mix[t.index] ?? { volume: 1, mute: false, solo: false };
                   const info = song.tracks[t.index];
@@ -842,7 +939,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
           )}
           {side === 'comments' && <CommentsPanel songId={song.id} bar={bar} revision={song.revision ?? 0} onGoto={(b) => gotoSection(b)} />}
           {side === 'audio' && (
-            <AudioPanel songId={song.id} audio={audio} onAudioChanged={loadAudio} playSource={effSource} setPlaySource={setPlaySource}
+            <AudioPanel songId={song.id} audio={media} onAudioChanged={loadAudio} playSource={effSource} setPlaySource={setPlaySource}
               api={apiRef.current} audioMs={engine.audioMs} canEdit={canEdit} videoId={video?.id ?? null} setVideoId={setVideoId} fromSongsterr={song.source.kind === 'songsterr'} />
           )}
           {side === 'chords' && (
@@ -995,6 +1092,10 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
       </div>
       {tuner && <Tuner tuning={focusTuning.length ? focusTuning : [64, 59, 55, 50, 45, 40]} tuningLabel={tuningLabel} referencePitch={prefs.referencePitch} onClose={() => setTuner(false)} />}
       {help && <ShortcutsHelp onClose={() => setHelp(false)} />}
+      {liveRigOpen && (
+        <TrackRigDialog mode="live" trackName={song.title} value={liveRig} legacyAmp={undefined} currentBar={bar} barCount={score?.masterBars.length ?? 1}
+          sections={sections} onChange={(v) => { setLiveRig(v ?? undefined); liveApplied.current = ''; }} onEditLegacy={() => {}} onRemoveLegacy={() => {}} onClose={() => setLiveRigOpen(false)} />
+      )}
       {simplifyOpen && <SimplifyDialog song={song} onClose={() => setSimplifyOpen(false)} onRevisions={() => setRevs(true)} />}
       {revs && <RevisionsDialog song={song} onClose={() => setRevs(false)} onChanged={(s2) => { onSongChange?.(s2); }} onHighlight={(b) => setMarks(b)} />}
       {rigFor !== null && tracks[rigFor] && (

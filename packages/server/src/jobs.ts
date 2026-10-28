@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import type { AudioAsset, Job, JobKind, StemName } from '@fretforge/shared';
 import type { ServerConfig } from './config';
 import { newId, type Store } from './store';
+import { ytdlpStatus } from './ytdlp';
 
 const here = typeof __dirname !== 'undefined' ? __dirname : dirname(fileURLToPath(import.meta.url));
 
@@ -58,6 +59,10 @@ export class JobRunner {
   }
 
   get venvDir() { return join(this.cfg.dataDir, 'ai-venv'); }
+
+  /** a yt-dlp executable to use (the one-click install or the system's), if any */
+  ytdlp(): string | null { return ytdlpStatus(this.cfg.dataDir, this.venvDir).path; }
+  ytdlpStatus() { return ytdlpStatus(this.cfg.dataDir, this.venvDir); }
 
   status(): AiStatus { return this.aiStatus; }
 
@@ -133,7 +138,7 @@ export class JobRunner {
     mkdirSync(outDir, { recursive: true });
     const args = job.kind === ('setup' as JobKind)
       ? [join(this.aiDir, 'fretforge_ai.py'), 'setup', JSON.stringify({ ...job.params, venv: this.venvDir })]
-      : [join(this.aiDir, 'fretforge_ai.py'), job.kind, JSON.stringify({ ...job.params, out: outDir, device: this.store.prefs().ai.device })];
+      : [join(this.aiDir, 'fretforge_ai.py'), job.kind, JSON.stringify({ ...job.params, out: outDir, device: this.store.prefs().ai.device, ytdlp: this.ytdlp() })];
     const py = job.kind === ('setup' as JobKind) ? (this.cfg.python || 'python3') : this.python();
     let proc: ChildProcess;
     try {

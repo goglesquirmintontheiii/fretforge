@@ -101,3 +101,20 @@ describe('tuning catalog', () => {
     expect(guitarBody(t({ program: 30 }))).toBe('electric');
   });
 });
+
+import { captureDevices } from '../src/namTags';
+describe('capture devices', () => {
+  it('groups captures of one device into its settings', () => {
+    const d = captureDevices([
+      { id: 'a', kind: 'nam', role: 'pedal', device: 'Klon', setting: 'Gain 3', name: 'k3' },
+      { id: 'b', kind: 'nam', role: 'pedal', device: 'klon ', setting: 'Gain 10', name: 'k10' },
+      { id: 'c', kind: 'nam', role: 'amp', device: 'Klon', name: 'odd one' },
+      { id: 'd', kind: 'nam', role: 'pedal', name: 'no device' },
+      { id: 'e', kind: 'ir', device: 'My 4x12', setting: 'SM57 edge', name: 'ir' },
+      { id: 'f', kind: 'ir', device: 'my 4x12', setting: 'R121', name: 'ir2' },
+    ]);
+    expect(d.map((x) => [x.name, x.role, x.kind, x.files.map((f) => f.setting)])).toEqual([
+      ['Klon', 'pedal', 'nam', ['Gain 3', 'Gain 10', 'odd one']], ['My 4x12', 'ir', 'ir', ['R121', 'SM57 edge']],
+    ]);
+  });
+});

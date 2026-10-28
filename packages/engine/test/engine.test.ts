@@ -261,3 +261,14 @@ describe('rig graphs', () => {
     expect(c.desc[8 + 1]).toBe(41);
   });
 });
+
+// the native build (bash build.sh) makes build/forge-test; CI always builds it
+import { existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+const harness = join(__dirname, '..', 'build', 'forge-test');
+describe.skipIf(!existsSync(harness))('native harness', () => {
+  it('the desktop song player keeps time, loops, ramps, stretches and stops', () => {
+    const out = execFileSync(harness, ['player'], { encoding: 'utf8' });
+    expect(out).toContain('player ok');
+  });
+});

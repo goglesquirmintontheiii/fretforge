@@ -63,7 +63,7 @@ export interface ImportResult { added: RigFile[]; existing: RigFile[]; errors: {
 /** Imports a .nam, .wav or .zip (any depth of folders) into the rig library. */
 export function importRigBytes(
   store: Store, dataDir: string, userId: string | null, fileName: string, bytes: Uint8Array,
-  opts: { role?: NamRole | 'auto'; source?: RigFileSource; pack?: string; tones?: string[]; genres?: string[]; tags?: string[] } = {},
+  opts: { role?: NamRole | 'auto'; source?: RigFileSource; pack?: string; tones?: string[]; genres?: string[]; tags?: string[]; device?: string } = {},
 ): ImportResult {
   const res: ImportResult = { added: [], existing: [], errors: [] };
   const one = (name: string, data: Uint8Array, pack?: string) => {
@@ -75,6 +75,8 @@ export function importRigBytes(
       const f: RigFile = {
         ...d, id: newId(), fileName: basename(name), bytes: data.length, addedBy: userId, createdAt: Date.now(), hash,
         pack: pack ?? opts.pack, source: opts.source ?? { kind: 'upload' },
+        // one device with several settings (a TONE3000 tone's models, say)
+        ...(opts.device && ['.nam', '.wav'].includes(extname(name).toLowerCase()) ? { device: opts.device.slice(0, 100), setting: basename(name, extname(name)).replace(/[_]+/g, ' ').slice(0, 100) } : {}),
         tones: [...new Set([...(d.tones ?? []), ...(opts.tones ?? [])])],
         genres: [...new Set([...(d.genres ?? []), ...(opts.genres ?? [])])],
         tags: [...new Set([...d.tags, ...(opts.tags ?? [])])].slice(0, 20),
@@ -179,9 +181,26 @@ export function registerRig(app: FastifyInstance, ctx: Ctx) {
     if (Array.isArray(b.tones)) f.tones = [...new Set(b.tones.map(String))].slice(0, 12);
     if (Array.isArray(b.genres)) f.genres = [...new Set(b.genres.map(String))].slice(0, 12);
     if (f.kind === 'nam' && typeof b.role === 'string' && ROLE_IDS.includes(b.role)) f.role = b.role;
-    for (const k of ['gearType', 'gearMake', 'gearModel', 'author', 'license', 'pack'] as const) if (typeof b[k] === 'string') f[k] = (b[k] as string).trim().slice(0, 100) || undefined;
+    for (const k of ['gearType', 'gearMake', 'gearModel', 'author', 'license', 'pack', 'device', 'setting'] as const) if (typeof b[k] === 'string') f[k] = (b[k] as string).trim().slice(0, 100) || undefined;
     store.putRigFile(f);
     return f;
+  });
+
+  // name several captures as settings of one device
+  app.post('/api/rig/files/device', async (req) => {
+    requireRole(req, 'owner', 'member');
+    const { ids, device } = (req.body ?? {}) as { ids?: string[]; device?: string };
+    const name = (device ?? '').trim().slice(0, 100);
+    const out: RigFile[] = [];
+    for (const id of (ids ?? []).slice(0, 500)) {
+      const f = store.rigFile(id);
+      if (!f || (f.kind !== 'nam' && f.kind !== 'ir')) continue;
+      f.device = name || undefined;
+      if (name && !f.setting) f.setting = f.name;
+      store.putRigFile(f);
+      out.push(f);
+    }
+    return { files: out };
   });
 
   app.delete('/api/rig/files/:id', async (req) => {

@@ -250,6 +250,8 @@ try {
   const share = await page.evaluate(async (id) => (await (await fetch(`/api/songs/${id}/share`, { method: 'POST' })).json()), songId);
   const guest = await browser.newContext({ viewport: { width: 1100, height: 800 } });
   const gp = await guest.newPage();
+  gp.on('pageerror', (e) => errors.push('guest: ' + e.message));
+  gp.on('console', (m) => { if (m.type() === 'error') errors.push('guest: ' + m.text()); });
   await gp.goto(`${base}/#/s/${share.token}`);
   await gp.waitForSelector('.at-surface svg, .at-surface div svg', { timeout: 30000 });
   check('share links open without an account', (await gp.locator('h1').textContent()) === 'Smoke Tab');

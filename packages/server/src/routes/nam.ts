@@ -176,6 +176,8 @@ export function registerNam(app: FastifyInstance, ctx: Ctx) {
             role: b.role ?? ROLE_FOR_TYPE[r.tone.type], pack: r.tone.title,
             source: { kind: 'tone3000', url: r.tone.url, ref: `${b.id}#${m.id}`, creator: r.tone.creator, license: r.tone.license },
             tones: r.tone.tones, genres: r.tone.genres, tags: ['tone3000'],
+            // a tone with several models is one device in several settings
+            device: r.raw.length > 1 && !isIr ? r.tone.title : undefined,
           });
           out.added.push(...res.added); out.existing.push(...res.existing); out.errors.push(...res.errors);
         } catch (e) {

@@ -164,7 +164,12 @@ const hasTimeBased = (rig: RigDoc, snapshot: number) => {
  * a warm-up so the result matches one continuous pass), segments crossfaded, tails of
  * delays and reverbs ringing into the next segment.
  */
-export async function processRigTrack(dry: Float32Array, segments: RigSegment[], sampleRate: number, tempo: number, onProgress: (f: number) => void, signal?: AbortSignal): Promise<{ L: Float32Array; R: Float32Array | null }> {
+/**
+ * Runs a dry track through rigs over time. Synth renders are brought to a DI-like level and the
+ * result is matched to the dry loudness; `raw` (a real DI recording) keeps the levels as they are,
+ * like playing through the rig live.
+ */
+export async function processRigTrack(dry: Float32Array, segments: RigSegment[], sampleRate: number, tempo: number, onProgress: (f: number) => void, signal?: AbortSignal, opts: { raw?: boolean } = {}): Promise<{ L: Float32Array; R: Float32Array | null }> {
   const p = await rigPool();
   const quality = rigQualityLevel, lite = quality === 0;
   // compile each rig/snapshot once and gather its files
@@ -178,7 +183,7 @@ export async function processRigTrack(dry: Float32Array, segments: RigSegment[],
   let peak = 0;
   for (let i = 0; i < dry.length; i++) { const v = Math.abs(dry[i]); if (v > peak) peak = v; }
   // the synth renders quietly; bring it to a DI-like level (peak around -6 dBFS) before the rig
-  const norm = peak > 1e-5 ? 0.5 / peak : 1;
+  const norm = opts.raw ? 1 : peak > 1e-5 ? 0.5 / peak : 1;
   const fade = Math.round(sampleRate * 0.01);
   let maxTail = 0;
   const plans = segments.map((s, si) => {
@@ -234,7 +239,7 @@ export async function processRigTrack(dry: Float32Array, segments: RigSegment[],
         ed += d * d; ew += 0.5 * (w * w + w2 * w2);
       }
     }
-    const g = (ew > 1e-12 && ed > 1e-12 ? Math.sqrt(ed / ew) / norm : 1) * Math.pow(10, s.rig.outputDb / 20);
+    const g = (!opts.raw && ew > 1e-12 && ed > 1e-12 ? Math.sqrt(ed / ew) / norm : 1) * Math.pow(10, s.rig.outputDb / 20);
     for (const res of results) {
       if (res.R && !outR) outR = outL.slice(0);
       for (let i = 0; i < res.L.length; i++) {
