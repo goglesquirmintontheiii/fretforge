@@ -17,6 +17,7 @@ import { registerSongs } from './routes/songs';
 import { registerRig } from './routes/rig';
 import { registerAudio } from './routes/audio';
 import { registerNam } from './routes/nam';
+import { registerTranscribe } from './routes/transcribe';
 import { importRigBytes, type ImportResult } from './routes/rig';
 import { LOCAL_USER_ID } from './store';
 import type { RigFileSource } from '@fretforge/shared';
@@ -98,6 +99,7 @@ export async function createServer(cfg: ServerConfig, providerCtx?: Partial<Prov
   registerRig(app, ctx);
   registerAudio(app, ctx);
   registerNam(app, ctx);
+  registerTranscribe(app, ctx);
 
   // ------------------------------------------------------------ web app
   if (cfg.staticDir && existsSync(cfg.staticDir)) {

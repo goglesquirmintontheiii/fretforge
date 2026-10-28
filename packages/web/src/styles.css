@@ -610,3 +610,12 @@ kbd { font: 600 10px/1 var(--mono, monospace); padding: 3px 5px; border-radius: 
 .filters select { flex: 1 1 150px; min-width: 0 }
 .filters .chip { flex: none }
 @media (max-width: 640px) { .filters select { flex-basis: calc(50% - 4px) } }
+.aiform legend { padding: 0; margin-bottom: 6px }
+.aiform legend span, .aiadv summary { font-size: 13px; color: var(--dim); font-weight: 600 }
+.aiadv summary { cursor: pointer; padding: 4px 0 }
+.aiadv[open] summary { margin-bottom: 8px }
+.uncertain { position: absolute; border-radius: 50%; border: 2px solid var(--warn, #e0a030); background: color-mix(in srgb, var(--warn, #e0a030) 18%, transparent); pointer-events: none }
+.aipanel .bar { height: 6px; border-radius: 4px; background: var(--sunk); overflow: hidden }
+.aipanel .bar i { display: block; height: 100%; background: var(--good) }
+.simpl { display: flex; gap: 10px; align-items: flex-start; padding: 9px 10px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer }
+.simpl.on { border-color: var(--accent); background: var(--accent-soft) }

@@ -13,6 +13,7 @@ import { AuthScreen, InviteScreen } from './components/AuthScreen';
 import { SharedSongView } from './player/SharedSongView';
 
 const RigView = lazy(() => import('./rig/RigView').then((m) => ({ default: m.RigView })));
+const AiTabView = lazy(() => import('./components/AiTabView').then((m) => ({ default: m.AiTabView })));
 const NewTabView = lazy(() => import('./editor/NewTabView').then((m) => ({ default: m.NewTabView })));
 const JobsView = lazy(() => import('./components/JobsView').then((m) => ({ default: m.JobsView })));
 
@@ -64,6 +65,7 @@ function Shell() {
           {route.name === 'rig' && <RigView tab={route.tab} id={route.id} type={route.type} />}
           {route.name === 'jobs' && <JobsView />}
           {route.name === 'new' && <NewTabView />}
+          {route.name === 'ai' && <AiTabView key={route.audio ?? ''} audioId={route.audio} />}
           {(route.name === 'invite' || route.name === 'signin') && <LibraryView />}
           {route.name === 'song' && <SongView key={route.id} id={route.id} edit={route.edit} onClose={() => (history.length > 1 ? history.back() : go('/'))} />}
         </Suspense>

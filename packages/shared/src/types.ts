@@ -2,7 +2,7 @@ export type Instrument = 'guitar' | 'bass' | 'drums' | 'keys' | 'vocals' | 'othe
 
 export type SongFormat = 'score' | 'text';
 
-export type SourceKind = 'local' | 'upload' | 'demo' | 'songsterr' | 'ultimate-guitar' | 'guitartabs' | 'created';
+export type SourceKind = 'local' | 'upload' | 'demo' | 'songsterr' | 'ultimate-guitar' | 'guitartabs' | 'created' | 'ai';
 
 export type OnlineSource = 'songsterr' | 'ultimate-guitar' | 'guitartabs' | 'guitar-pro' | 'guitar-ch';
 
@@ -78,6 +78,10 @@ export interface SongRecord {
   commentCount?: number;
   /** personal: pinned for offline use */
   offline?: boolean;
+  /** only the creator sees it (AI tabs until shared) */
+  private?: boolean;
+  /** AI tab details (confidence, reviewed bars) */
+  ai?: AiTabInfo;
 }
 
 /** Amp chain on one tab track (the NAM model and IR come from the rig library). */
@@ -113,6 +117,8 @@ export interface PracticeState {
   playSource?: PlaySource;
   /** the video (asset id) played when playSource is 'video' */
   videoId?: string;
+  /** per tab track: synth, its AI stem, or auto (the stem while the track is soloed) */
+  trackSources?: Record<string, 'auto' | 'synth' | 'stem'>;
   /** mixer state for audio assets by asset id */
   audioMix?: Record<string, { volume: number; mute: boolean; solo: boolean; pan?: number }>;
   speed?: number;
@@ -414,7 +420,49 @@ export interface AudioAsset {
   createdAt: number;
 }
 
-export type JobKind = 'separate' | 'align' | 'train-nam' | 'youtube';
+export type JobKind = 'separate' | 'align' | 'train-nam' | 'youtube' | 'transcribe';
+
+// ---------------------------------------------------------------- AI tabs (0.5)
+export type AiInstrument = 'guitar' | 'bass' | 'drums' | 'piano' | 'vocals' | 'other';
+export const AI_INSTRUMENTS: { id: AiInstrument; label: string }[] = [
+  { id: 'guitar', label: 'Guitar' }, { id: 'bass', label: 'Bass' }, { id: 'drums', label: 'Drums' },
+  { id: 'piano', label: 'Piano and keys' }, { id: 'vocals', label: 'Vocal melody' }, { id: 'other', label: 'Other (strings, winds, synths)' },
+];
+
+/** Like Songsterr's AI setup: each value is automatic unless set. */
+export interface TranscribeOptions {
+  instruments: AiInstrument[];
+  title?: string;
+  artist?: string;
+  /** strings, highest first (alphaTab order); default standard 6-string / 4-string */
+  guitarTuning?: number[];
+  guitarCapo?: number;
+  bassTuning?: number[];
+  /** first bar's time signature, e.g. [6, 8]; null = automatic */
+  timeSignature?: [number, number] | null;
+  /** beats before the first full bar; null = automatic */
+  pickupBeats?: number | null;
+  /** fixed tempo for the first bar; null = automatic */
+  bpm?: number | null;
+  /** 'auto' picks per beat, 'straight' never uses triplets, 'triplet' always swings eighths into triplets */
+  feel?: 'auto' | 'straight' | 'triplet';
+  lyrics?: boolean;
+  /** visible only to the person who made it until shared (default true) */
+  private?: boolean;
+}
+
+/** What an AI tab remembers for the correction workflow. */
+export interface AiTabInfo {
+  jobId: string;
+  createdAt: number;
+  /** notes the models weren't sure of: track, bar, beat index in voice 0, note index */
+  lowConfidence: { t: number; b: number; beat: number; n: number }[];
+  /** bars someone marked as reviewed */
+  reviewedBars: number[];
+  methods: Record<string, string>;
+  /** score track index -> stem name (guitar, bass, drums…) for the mixer's AI track autoswitch */
+  trackStems?: Record<number, string>;
+}
 export type JobState = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 
 export interface Job {

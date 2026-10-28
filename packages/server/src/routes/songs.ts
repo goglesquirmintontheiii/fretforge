@@ -12,6 +12,8 @@ import { fetchGuitarTabs, searchGuitarTabs } from '../providers/guitartabs';
 import { searchGuitarCh, searchGuitarPro } from '../providers/catalogs';
 import { BrowserCheckError } from '../providers/http';
 import { addSongsterrVideos } from '../videos';
+import { learnFingering } from './transcribe';
+import { loadScore } from '../score';
 import { guitarBody, guitarTone, stringFamily, type GuitarBody, type GuitarTone, type StringFamily } from '@fretforge/shared';
 
 const uid = (req: FastifyRequest) => req.user!.id;
@@ -61,7 +63,11 @@ export function registerSongs(app: FastifyInstance, ctx: Ctx) {
     return { tunings: list(tunings).map((t) => ({ ...t, family: famOf.get(t.name) ?? null })), families: list(families), bodies: list(bodies), tones: list(tones) };
   });
 
-  app.get('/api/songs/:id', async (req) => store.songFor(uid(req), getSong((req.params as { id: string }).id)));
+  app.get('/api/songs/:id', async (req) => {
+    const s = getSong((req.params as { id: string }).id);
+    if (s.private && s.createdBy !== uid(req)) throw httpError(404, 'That song isn’t in the library any more.');
+    return store.songFor(uid(req), s);
+  });
 
   app.patch('/api/songs/:id', async (req) => {
     const s = getSong((req.params as { id: string }).id);
@@ -178,6 +184,8 @@ export function registerSongs(app: FastifyInstance, ctx: Ctx) {
     if (!Buffer.isBuffer(body) || !body.length) throw httpError(400, 'Send the tab as application/octet-stream.');
     const message = String((req.query as Record<string, string>).message ?? '');
     const r = library.saveRevision(s, new Uint8Array(body), u, message);
+    // corrections to AI tabs teach the fingering model
+    if (s.source.kind === 'ai') { try { learnFingering(store, s, loadScore(new Uint8Array(body), 'gp')); } catch { /* learning is optional */ } }
     return { revision: r, song: store.songFor(u.id, store.song(s.id)!) };
   });
 

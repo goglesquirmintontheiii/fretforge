@@ -10,6 +10,7 @@ export type Route =
   | { name: 'search'; q: string }
   | { name: 'song'; id: string; edit?: boolean }
   | { name: 'new' }
+  | { name: 'ai'; audio?: string }
   | { name: 'rig'; tab: 'rigs' | 'library' | 'find' | 'train'; id?: string; type?: string }
   | { name: 'jobs' }
   | { name: 'invite'; token: string }
@@ -32,6 +33,7 @@ export function parseRoute(hash: string): Route {
   }
   if (parts[0] === 'jobs') return { name: 'jobs' };
   if (parts[0] === 'new') return { name: 'new' };
+  if (parts[0] === 'ai') return { name: 'ai', audio: params.get('audio') ?? undefined };
   if (parts[0] === 'invite' && parts[1]) return { name: 'invite', token: parts[1] };
   if (parts[0] === 's' && parts[1]) return { name: 'share', token: parts[1] };
   if (parts[0] === 'signin') return { name: 'signin', error: params.get('error') ?? undefined };

@@ -119,7 +119,7 @@ export class Library {
   }
 
   /** Saves edited score bytes as a new revision and makes it the default. */
-  saveRevision(song: SongRecord, bytes: Uint8Array, user: { id: string; name: string } | null, message: string): Revision {
+  saveRevision(song: SongRecord, bytes: Uint8Array, user: { id: string; name: string } | null, message: string, opts: { makeDefault?: boolean } = {}): Revision {
     const score = loadScore(bytes, 'gp');
     const sum = summarizeScore(score);
     const revs = this.store.revisions(song.id);
@@ -136,6 +136,8 @@ export class Library {
     writeFileSync(join(this.dataDir, file), bytes);
     const r: Revision = { rev, songId: song.id, userId: user?.id ?? null, userName: user?.name ?? 'Someone', message: message.trim().slice(0, 200) || 'Edited', createdAt: Date.now(), file, bytes: bytes.length };
     this.store.addRevision(r);
+    // alternative versions (simplified arrangements) don't replace the one people play
+    if (opts.makeDefault === false) return r;
     this.store.patch(song.id, {
       file, ext: 'gp', revision: rev, tracks: sum.tracks, instruments: sum.instruments, tempo: sum.tempo, bars: sum.bars, hasLyrics: sum.hasLyrics,
       title: sum.title || song.title, artist: sum.artist || song.artist,
@@ -339,6 +341,8 @@ export class Library {
       songs = this.store.songs();
     }
     if (q.ids && text) { const set = new Set(q.ids); songs = songs.filter((s) => set.has(s.id)); }
+    // private songs (AI tabs until shared) only show for their maker
+    songs = songs.filter((s) => !s.private || s.createdBy === q.userId);
     songs = songs.map((s) => this.store.songFor(q.userId, s));
     if (q.instrument && q.instrument !== 'all') songs = songs.filter((s) => s.instruments.includes(q.instrument as Instrument));
     if (q.tuning || q.family || q.body || q.tone) {

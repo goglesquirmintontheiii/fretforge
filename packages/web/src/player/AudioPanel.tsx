@@ -36,6 +36,14 @@ export function useJobs(songId?: string) {
   return { jobs, ai, refresh: () => setTick((x) => x + 1) };
 }
 
+function eta(j: Job): string {
+  if (j.state !== 'running' || !j.startedAt || j.progress < 0.04) return '';
+  const left = ((Date.now() - j.startedAt) * (1 - j.progress)) / j.progress / 1000;
+  if (left < 60) return ' · under a minute left';
+  if (left < 3600) return ` · about ${Math.round(left / 60)} min left`;
+  return ` · about ${(left / 3600).toFixed(1)} h left`;
+}
+
 export function JobRow({ j, onCancel }: { j: Job; onCancel?: () => void }) {
   const active = j.state === 'queued' || j.state === 'running';
   return (
@@ -46,7 +54,7 @@ export function JobRow({ j, onCancel }: { j: Job; onCancel?: () => void }) {
       </div>
       {active && <div className="bar"><i style={{ width: `${Math.max(2, j.progress * 100)}%` }} /></div>}
       <div className="row" style={{ justifyContent: 'space-between', gap: 6 }}>
-        <span className="faint" style={{ fontSize: 12 }}>{j.message}</span>
+        <span className="faint" style={{ fontSize: 12 }}>{j.message}{eta(j)}</span>
         {active && onCancel && <button className="btn ghost sm" onClick={onCancel}>Cancel</button>}
       </div>
     </div>
@@ -166,6 +174,7 @@ export function AudioPanel({ songId, audio, onAudioChanged, playSource, setPlayS
                 {stemsOf(a.id).length ? 'Separate again' : 'Separate instruments'}
               </button>
               <button className="btn sm" onClick={() => setSyncing(syncing === a.id ? null : a.id)} aria-expanded={syncing === a.id}>Sync to tab</button>
+              <a className="btn sm" href={`#/ai?audio=${a.id}`} title="Make a new tab from this recording">AI tab</a>
             </div>
           )}
           {syncing === a.id && <SyncTools asset={a} api={at} audioMs={audioMs} aiReady={!!ai?.available} onSaved={() => { onAudioChanged(); refresh(); }} recordingMode={playSource === 'recording'} />}

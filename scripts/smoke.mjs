@@ -122,12 +122,14 @@ try {
   check('rig library accepts a .nam model and a .wav IR', up.added?.length === 2, JSON.stringify(up.errors ?? up));
   await page.getByRole('tab', { name: 'Mixer' }).click();
   await page.locator('.ampbtn').first().click();
-  await page.locator('#amp-nam').selectOption({ label: 'Test Model' }).catch(async () => page.locator('#amp-nam').selectOption({ index: 1 }));
-  await page.locator('#amp-ir').selectOption({ index: 1 });
-  if (shots) await page.screenshot({ path: join(shots, '04b-amp.png') });
+  // 0.6: the RIG button opens the track's rig; a new starter rig goes on the track
+  await page.getByRole('button', { name: 'New rig' }).click();
+  await page.locator('#track-rig').waitFor();
+  await page.waitForFunction(() => document.querySelector('#track-rig')?.value, null, { timeout: 10000 });
+  if (shots) await page.screenshot({ path: join(shots, '04b-rig.png') });
   await page.getByRole('button', { name: 'Close' }).click();
   await page.waitForFunction(() => document.querySelector('.side-pane p.faint')?.textContent?.includes('Mix mode'), null, { timeout: 60000 });
-  check('an amp switches the player to mix mode', true);
+  check('a rig switches the player to mix mode', true);
   await page.waitForFunction(() => !document.querySelector('.engstat'), null, { timeout: 90000 });
   await page.keyboard.press('l'); // loop off so time moves on
   const t0 = await page.locator('.time').textContent();
@@ -198,7 +200,8 @@ try {
   await page.locator('.song', { hasText: 'Fretforge Shuffle' }).first().waitFor();
   await page.waitForFunction(() => document.querySelectorAll('.section-h .spinner').length === 0, null, { timeout: 40000 });
   const sections = await page.locator('.section-h h2').allTextContents();
-  check('search shows library and online sections', sections.some((s) => s.includes('Songsterr')) && sections.some((s) => s.includes('Ultimate Guitar')), sections.join(' | '));
+  const chips = await page.locator('.src-chip').allTextContents();
+  check('search shows library and merged online results with every source', sections.includes('Online') && ['Songsterr', 'Ultimate Guitar', 'GuitarTabs.cc'].every((n) => chips.some((c) => c.includes(n))), `${sections.join(' | ')} / ${chips.join(', ')}`);
   if (shots) await page.screenshot({ path: join(shots, '06-search.png') });
 
   // ---- tab editor: new tab, type notes, save a revision
@@ -261,29 +264,31 @@ try {
   check('viewers get no import or new-tab buttons', (await gp.getByRole('button', { name: 'Import files' }).count()) === 0);
   await guest.close();
 
-  // ---- rig page
-  await page.goto(base + '/#/rig');
+  // ---- rig pages: library, editor, live rig
+  await page.goto(base + '/#/rig/library');
   await page.getByRole('heading', { name: 'Models and IRs' }).waitFor();
   await page.locator('.rigfile').first().waitFor({ timeout: 15000 });
   check('rig page lists the library', (await page.locator('.rigfile').count()) === 2);
-  await page.getByRole('button', { name: /Preview with a riff/ }).click();
-  await page.waitForFunction(() => !document.querySelector('button .spinner'), null, { timeout: 60000 });
-  check('amp preview renders the riff', true);
+  await page.goto(base + '/#/rig');
+  await page.locator('.rigpage').first().waitFor({ timeout: 15000 });
   await ctx.grantPermissions(['microphone']);
-  await page.locator('#amp-nam').selectOption({ index: 1 });
-  await page.getByRole('button', { name: /^Start$/ }).click();
-  await page.locator('.meter').first().waitFor({ timeout: 20000 });
-  // the fake microphone beeps once a second: watch the meter for a moment
-  let meterW = 0;
-  for (let i = 0; i < 30 && meterW <= 1; i++) { await page.waitForTimeout(100); meterW = await page.locator('.meter i').first().evaluate((el) => parseFloat(el.style.width)); }
-  check('the live browser rig runs on the input', meterW > 1, `input meter ${meterW}%`);
-  await page.getByRole('button', { name: /^Stop$/ }).click();
+  await page.getByRole('button', { name: /Play live/ }).click();
+  await page.locator('.livemeters').first().waitFor({ timeout: 20000 });
+  // the fake microphone beeps once a second: watch the input meter for a moment
+  let meterH = 0;
+  for (let i = 0; i < 40 && meterH <= 1; i++) { await page.waitForTimeout(100); meterH = await page.locator('.livemeters i').first().evaluate((el) => parseFloat(el.style.height)); }
+  check('the live browser rig runs on the input', meterH > 1, `input meter ${meterH}%`);
+  await page.getByRole('button', { name: /^Live$/ }).click();
   if (shots) await page.screenshot({ path: join(shots, '09-rig.png') });
+  // ---- AI tab page
+  await page.goto(base + '/#/ai');
+  await page.getByRole('heading', { name: 'AI tab' }).waitFor();
+  check('the AI tab page offers the instruments', (await page.locator('.aiform .chip').count()) >= 6);
 
   // mobile layout
   await page.setViewportSize({ width: 390, height: 844 });
   const wide = [];
-  for (const [hash, sel, name] of [['/#/', '.song', 'library'], ['/#/rig', '.rigfile', 'rig'], ['/#/settings', '.setcard', 'settings'], [`/#/song/${shuffleId}`, '.at-surface', 'player']]) {
+  for (const [hash, sel, name] of [['/#/', '.song', 'library'], ['/#/rig/library', '.rigfile', 'rig'], ['/#/ai', '.aiform', 'ai tab'], ['/#/search?q=shuffle', '.src-chip', 'search'], ['/#/settings', '.setcard', 'settings'], [`/#/song/${shuffleId}`, '.at-surface', 'player']]) {
     await page.goto(base + hash);
     await page.locator(sel).first().waitFor({ timeout: 30000 });
     await page.waitForTimeout(500);

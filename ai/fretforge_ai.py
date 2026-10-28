@@ -15,6 +15,7 @@ Commands
   align       find bar positions in a recording from a synth render of the tab (chroma + DTW)
   youtube     download the audio of a YouTube video with yt-dlp
   train-nam   train a Neural Amp Modeler capture from a reamped test signal
+  transcribe  AI tabs: separate a recording, then find beats, sections, notes, drum hits and lyrics
 """
 import json
 import os
@@ -118,19 +119,25 @@ def run_logged(cmd, p0, p1):
 
 # ---------------------------------------------------------------- separate
 def cmd_separate(args):
+    stems, device, model = separate_stems(args["input"], args["out"], args.get("model", "htdemucs_6s"), args.get("device", "auto"), split=bool(args.get("splitGuitars")))
+    emit(result={"stems": stems, "device": device, "model": model})
+
+
+def separate_stems(src, out, model="htdemucs_6s", device_pref="auto", split=False, p0=0.0, p1=1.0):
+    """Runs Demucs; returns ({stem: path}, device, model). Progress is mapped into [p0, p1]."""
+    def prog(p, m):
+        progress(p0 + (p1 - p0) * p, m)
+
     try:
         import numpy as np
         import soundfile as sf
     except Exception as e:  # pragma: no cover
         fail(f"Missing Python packages ({e}). Set up the AI tools in Settings.")
-    src = args["input"]
-    out = args["out"]
-    model = args.get("model", "htdemucs_6s")
     if not os.path.exists(src):
         fail("The recording file is missing.")
     if os.path.splitext(src)[1].lower() not in (".wav", ".flac"):
         # Demucs decodes other formats with ffmpeg; libsndfile covers MP3/OGG without it
-        progress(0.005, "Decoding the recording")
+        prog(0.005, "Decoding the recording")
         try:
             data, sr_in = sf.read(src, always_2d=True)
         except Exception:
@@ -141,8 +148,8 @@ def cmd_separate(args):
             wav = os.path.join(out, os.path.splitext(os.path.basename(src))[0] + ".wav")
             sf.write(wav, data.astype(np.float32), sr_in)
             src = wav
-    device = pick_device(args.get("device", "auto"))
-    progress(0.01, f"Separating with {model} on {device.upper()}")
+    device = pick_device(device_pref)
+    prog(0.01, f"Separating with {model} on {device.upper()}")
     cmd = [sys.executable, "-m", "demucs", "-n", model, "--flac", "-d", "cuda" if device in ("cuda", "rocm") else device, "-o", out, src]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     last = time.time()
@@ -163,7 +170,7 @@ def cmd_separate(args):
                 try:
                     pct = float(line.split("%|")[0].split()[-1]) / 100.0
                     if time.time() - last > 0.5:
-                        progress(0.02 + pct * 0.88, "Separating instruments")
+                        prog(0.02 + pct * 0.88, "Separating instruments")
                         last = time.time()
                 except ValueError:
                     pass
@@ -180,14 +187,14 @@ def cmd_separate(args):
         p = os.path.join(stem_dir, name + ".flac")
         if os.path.exists(p):
             stems[name] = p
-    if args.get("splitGuitars") and "guitar" in stems:
-        progress(0.92, "Splitting lead and rhythm guitar")
+    if split and "guitar" in stems:
+        prog(0.92, "Splitting lead and rhythm guitar")
         try:
             extra = split_guitars(stems["guitar"], stem_dir)
             stems.update(extra)
         except Exception as e:
-            progress(0.95, f"Lead/rhythm split skipped: {e}")
-    emit(result={"stems": stems, "device": device, "model": model})
+            prog(0.95, f"Lead/rhythm split skipped: {e}")
+    return stems, device, model
 
 
 def split_guitars(path, out_dir):
@@ -298,33 +305,8 @@ def cmd_align(args):
 
 # ---------------------------------------------------------------- youtube
 def cmd_youtube(args):
-    out = args["out"]
-    exe = shutil.which("yt-dlp")
-    cmd = [exe] if exe else [sys.executable, "-m", "yt_dlp"]
-    node = args.get("node")
-    if node:
-        # yt-dlp needs a JavaScript runtime for YouTube; Electron can act as Node
-        cmd += ["--js-runtimes", f"node:{node}"]
-    cmd += ["-x", "--audio-format", "best", "--no-playlist", "-o", os.path.join(out, "%(title).80s.%(ext)s"), "--print", "after_move:filepath", "--newline", args["url"]]
-    env = dict(os.environ, ELECTRON_RUN_AS_NODE="1")
     progress(0.02, "Downloading")
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
-    path = None
-    tail = []
-    for line in proc.stdout:
-        line = line.strip()
-        tail = (tail + [line])[-4:]
-        if line.startswith("[download]") and "%" in line:
-            try:
-                pct = float(line.split("%")[0].split()[-1])
-                progress(0.02 + pct / 100 * 0.9, "Downloading audio")
-            except ValueError:
-                pass
-        elif os.path.isabs(line) and os.path.exists(line):
-            path = line
-    if proc.wait() != 0 or not path:
-        fail("yt-dlp could not get the audio: " + " ".join(tail[-2:]))
-    title = os.path.splitext(os.path.basename(path))[0]
+    path, title = youtube_download(args["url"], args["out"], args.get("node"), 0.02, 0.92)
     emit(result={"file": path, "title": title})
 
 
@@ -389,7 +371,115 @@ def find_test_signal():
     return None
 
 
+# ---------------------------------------------------------------- transcribe
+STEM_FOR = {"guitar": ["guitar", "lead-guitar", "rhythm-guitar"], "bass": ["bass"], "drums": ["drums"], "piano": ["piano"], "vocals": ["vocals"], "other": ["other"]}
+
+
+def cmd_transcribe(args):
+    """args: input (file) or url, out, instruments [guitar, bass, drums, piano, vocals, other],
+    separate (default true), stems ({name: path}, skips separation), lyrics (bool), model, device."""
+    try:
+        import numpy as np  # noqa: F401
+        import librosa  # noqa: F401
+        import soundfile  # noqa: F401
+    except Exception as e:
+        fail(f"Missing Python packages ({e}). Set up the AI tools in Settings.")
+    import numpy as np
+    import transcribe as tr
+    out = args["out"]
+    src = args.get("input")
+    title = args.get("title")
+    if args.get("url"):
+        progress(0.0, "Downloading the audio")
+        src, yt_title = youtube_download(args["url"], out, args.get("node"), 0.0, 0.08)
+        title = title or yt_title
+    if not src or not os.path.exists(src):
+        fail("The recording file is missing.")
+    wanted = [i for i in (args.get("instruments") or ["guitar", "bass", "drums", "vocals"]) if i in STEM_FOR]
+    if not wanted:
+        fail("Choose at least one instrument to transcribe.")
+    device = pick_device(args.get("device", "auto"))
+    stems = dict(args.get("stems") or {})
+    if not stems and args.get("separate", True):
+        try:
+            import demucs  # noqa: F401
+        except Exception:
+            fail("Stem separation (Demucs) isn't installed. Set up the AI tools in Settings.")
+        stems, device, _ = separate_stems(src, out, args.get("model", "htdemucs_6s"), args.get("device", "auto"), p0=0.08, p1=0.55)
+    progress(0.56, "Finding beats and bars")
+    mix = tr.load(src)
+    duration = len(mix) / tr.SR
+    beat_src = stems.get("drums") if stems.get("drums") and args.get("beatsFromDrums") else src
+    beats, downbeats, beat_method = tr.detect_beats(beat_src, mix if beat_src == src else tr.load(beat_src))
+    progress(0.62, "Finding sections")
+    try:
+        sections = tr.detect_sections(mix, tr.SR, beats)
+    except Exception:
+        sections = [{"time": 0.0, "label": "A"}]
+    tracks = []
+    n = len(wanted)
+    for k, inst in enumerate(wanted):
+        p = 0.64 + 0.28 * k / n
+        path = next((stems[s] for s in STEM_FOR[inst] if s in stems), None)
+        if path is None:
+            if stems:
+                progress(p, f"No {inst} stem; skipping")
+                continue
+            path = src  # no separation: transcribe the whole mix
+        progress(p, f"Transcribing {inst}")
+        y = tr.load(path)
+        rms = float(np.sqrt(np.mean(y ** 2))) if len(y) else 0.0
+        if rms < 1e-4:
+            progress(p, f"The {inst} stem is silent; skipping")
+            continue
+        if inst == "drums":
+            tracks.append({"instrument": "drums", "stem": path, "hits": tr.drum_hits(y, tr.SR), "method": "bands"})
+        else:
+            notes, method = tr.transcribe_stem(inst, path, y)
+            t = {"instrument": inst, "stem": path, "notes": notes, "method": method}
+            if inst == "guitar":
+                t["tone"] = tr.guitar_tone(y, tr.SR)
+            tracks.append(t)
+    words = None
+    if args.get("lyrics", True) and "vocals" in wanted:
+        progress(0.93, "Transcribing lyrics")
+        vpath = stems.get("vocals") or src
+        words = tr.lyrics_words(vpath, device)
+    progress(0.99, "Writing the result")
+    emit(result={
+        "input": src, "title": title, "duration": duration, "beats": beats, "downbeats": downbeats, "beatMethod": beat_method,
+        "sections": sections, "tracks": tracks, "lyrics": words, "stems": stems, "device": device,
+    })
+
+
+def youtube_download(url, out, node, p0, p1):
+    exe = shutil.which("yt-dlp")
+    cmd = [exe] if exe else [sys.executable, "-m", "yt_dlp"]
+    if node:
+        cmd += ["--js-runtimes", f"node:{node}"]
+    cmd += ["-x", "--audio-format", "best", "--no-playlist", "-o", os.path.join(out, "%(title).80s.%(ext)s"), "--print", "after_move:filepath", "--newline", url]
+    env = dict(os.environ, ELECTRON_RUN_AS_NODE="1")
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+    path = None
+    tail = []
+    for line in proc.stdout:
+        line = line.strip()
+        tail = (tail + [line])[-4:]
+        if line.startswith("[download]") and "%" in line:
+            try:
+                pct = float(line.split("%")[0].split()[-1])
+                progress(p0 + pct / 100 * (p1 - p0), "Downloading audio")
+            except ValueError:
+                pass
+        elif os.path.isabs(line) and os.path.exists(line):
+            path = line
+    if proc.wait() != 0 or not path:
+        fail("yt-dlp could not get the audio: " + " ".join(tail[-2:]))
+    return path, os.path.splitext(os.path.basename(path))[0]
+
+
 COMMANDS = {
+    "transcribe": cmd_transcribe,
     "probe": cmd_probe,
     "setup": cmd_setup,
     "separate": cmd_separate,

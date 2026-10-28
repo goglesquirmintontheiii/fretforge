@@ -1,4 +1,4 @@
-import type { AmpSettings, AudioAsset, Comment, Instrument, Invite, Job, NamRole, NamSearchModel, NamSearchQuery, NamSearchResponse, NamSearchResult, NamSearchSource, OnlineResult, OnlineSearchResponse, Playlist, Prefs, PublicUser, Revision, RigDoc, RigFile, RigPreset, Role, Setlist, ShareLink, SongRecord, StatusResponse, SyncPoint, TextTab } from '@fretforge/shared';
+import type { TranscribeOptions, AmpSettings, AudioAsset, Comment, Instrument, Invite, Job, NamRole, NamSearchModel, NamSearchQuery, NamSearchResponse, NamSearchResult, NamSearchSource, OnlineResult, OnlineSearchResponse, Playlist, Prefs, PublicUser, Revision, RigDoc, RigFile, RigPreset, Role, Setlist, ShareLink, SongRecord, StatusResponse, SyncPoint, TextTab } from '@fretforge/shared';
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number) { super(message); }
@@ -136,6 +136,16 @@ export const api = {
   },
   addVideo: (songId: string, url: string, name?: string) => call<AudioAsset>(`/api/songs/${songId}/videos`, json({ url, name })),
   songsterrVideos: (songId: string) => call<{ videos: AudioAsset[] }>(`/api/songs/${songId}/videos/songsterr`, { method: 'POST' }),
+  transcribe: (b: { url?: string; audioId?: string; options: TranscribeOptions }) => call<Job>('/api/transcribe', json(b)),
+  transcribeUpload: (file: File, options: TranscribeOptions) => {
+    const fd = new FormData();
+    fd.append('options', JSON.stringify(options));
+    fd.append('file', file, file.name);
+    return call<Job>('/api/transcribe/upload', { method: 'POST', body: fd });
+  },
+  publishSong: (id: string) => call<SongRecord>(`/api/songs/${id}/publish`, json({})),
+  reviewBars: (id: string, bars: number[], reviewed = true) => call<SongRecord>(`/api/songs/${id}/ai/review`, json({ bars, reviewed })),
+  simplify: (id: string, kind: string, factor?: number) => call<{ revision: Revision; song: SongRecord }>(`/api/songs/${id}/simplify`, json({ kind, factor })),
   youtube: (songId: string, url: string) => call<Job>(`/api/songs/${songId}/youtube`, json({ url })),
   jobs: () => call<{ jobs: Job[]; ai: StatusResponse['ai'] }>('/api/jobs'),
   cancelJob: (id: string) => call(`/api/jobs/${id}`, { method: 'DELETE' }),

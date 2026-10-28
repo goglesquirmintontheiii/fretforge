@@ -198,6 +198,7 @@ export function LibraryView({ playlist, view }: { playlist?: string; view?: 'fav
           {!pl && canEdit && (
             <>
               <a className="btn sm" href="#/new">{Icon.plus({ size: 15 })} New tab</a>
+              <a className="btn sm" href="#/ai" title="Make a tab from a recording or a YouTube link">AI tab</a>
               <button className="btn sm" onClick={() => fileInput.current?.click()} disabled={importing}>
                 {importing ? <span className="spinner" /> : Icon.upload({ size: 15 })} Import files
               </button>

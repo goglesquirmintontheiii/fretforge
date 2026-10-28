@@ -9,6 +9,7 @@ import { transposeScore } from '../lib/transpose';
 import { useWakeLock } from '../lib/wakeLock';
 import { MenuButton } from '../components/AppMenu';
 import { VideoDock } from './VideoDock';
+import { AiPanel, SimplifyDialog } from './AiPanel';
 import { Icon, InstrumentIcon } from '../components/icons';
 import { ChordDiagram } from '../components/ChordDiagram';
 import { Fretboard } from './Fretboard';
@@ -30,7 +31,9 @@ import { askConfirm } from '../lib/dialog';
 
 type Mix = Record<number, { volume: number; mute: boolean; solo: boolean }>;
 type View = 'tab' | 'notation' | 'both';
-type SideTab = 'mixer' | 'chords' | 'lyrics' | 'audio' | 'comments';
+const INSTRUMENT_STEM: Record<string, string> = { guitar: 'guitar', bass: 'bass', drums: 'drums', keys: 'piano', vocals: 'vocals', other: 'other' };
+
+type SideTab = 'mixer' | 'chords' | 'lyrics' | 'audio' | 'comments' | 'ai';
 interface Trainer { on: boolean; start: number; step: number; target: number; passes: number }
 
 const SPEED_PRESETS = [0.25, 0.5, 0.75, 0.9, 1];
@@ -133,10 +136,30 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
   const videos = useMemo(() => audio.filter((x) => x.kind === 'video'), [audio]);
   const video = videos.find((v) => v.id === videoId) ?? videos[0] ?? null;
   const effSource: PlaySource = playSource === 'recording' && files.length ? 'recording' : playSource === 'video' && video ? 'video' : 'tab';
+  // AI track autoswitch: a track can play its AI stem instead of the synth
+  const [trackSources, setTrackSources] = useState<Record<string, 'auto' | 'synth' | 'stem'>>(() => p.trackSources ?? {});
+  const stemOf = useCallback((t: number) => {
+    const name = song.ai?.trackStems?.[t] ?? INSTRUMENT_STEM[song.tracks[t]?.instrument ?? 'other'];
+    const st = files.find((x) => x.kind === 'stem' && x.stem === name);
+    return st && (st.syncPoints.length > 1 || st.offsetMs) ? st : undefined;
+  }, [files, song.ai, song.tracks]);
+  const trackStems = useMemo(() => {
+    const out: Record<number, AudioAsset> = {};
+    if (effSource !== 'tab') return out;
+    const n = song.tracks.length;
+    for (let t = 0; t < n; t++) {
+      const st = stemOf(t);
+      if (!st) continue;
+      const mode = trackSources[t] ?? 'auto';
+      // auto: the stem plays when you solo the track
+      if (mode === 'stem' || (mode === 'auto' && mix[t]?.solo)) out[t] = st;
+    }
+    return out;
+  }, [effSource, song.tracks.length, stemOf, trackSources, mix]);
 
   const [editingNow, setEditingNow] = useState(!!edit);
   const engine = useEngine({
-    apiRef, score, scoreKey, song, amps: editingNow ? {} : amps, trackRigs: editingNow ? {} : trackRigs, rigs: rigList, playSource: editingNow ? 'tab' : effSource, audio: editingNow ? [] : files, video: editingNow ? null : video, mix, audioMix, master, speed, pitch, metro, metroVol, countIn, looping, range, onToast,
+    apiRef, score, scoreKey, song, amps: editingNow ? {} : amps, trackRigs: editingNow ? {} : trackRigs, rigs: rigList, playSource: editingNow ? 'tab' : effSource, audio: editingNow ? [] : files, video: editingNow ? null : video, trackStems: editingNow ? {} : trackStems, mix, audioMix, master, speed, pitch, metro, metroVol, countIn, looping, range, onToast,
   });
   const engineOn = useRef(false);
   engineOn.current = engine.active;
@@ -224,6 +247,9 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
   const [marks, setMarks] = useState<number[]>([]);
   const [markBoxes, setMarkBoxes] = useState<{ x: number; y: number; w: number; h: number }[]>([]);
   const [revs, setRevs] = useState(false);
+  const [simplifyOpen, setSimplifyOpen] = useState(false);
+  const [showUncertain, setShowUncertain] = useState(!!song.ai && !(song.revision ?? 0));
+  const [uncertainBoxes, setUncertainBoxes] = useState<{ x: number; y: number; w: number; h: number }[]>([]);
   const editor = useEditor({
     apiRef, scoreRef, score, song, focus, setFocus, visible, setVisible, onToast,
     onSaved: (s2) => { onSongChange?.(s2); },
@@ -247,6 +273,30 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
     place();
     return a.postRenderFinished.on(place);
   }, [marks]);
+
+  // AI tabs: boxes around the notes the models weren't sure of
+  useEffect(() => {
+    const a = apiRef.current;
+    const low = song.ai?.lowConfidence ?? [];
+    if (!a || !showUncertain || !low.length || (song.revision ?? 0) > 0) { setUncertainBoxes([]); return; }
+    const want = new Set(low.map((x) => `${x.t}:${x.b}:${x.beat}:${x.n}`));
+    const place = () => {
+      const boxes: { x: number; y: number; w: number; h: number }[] = [];
+      for (const sys of a.boundsLookup?.staffSystems ?? []) for (const mb of sys.bars) for (const bb of mb.bars) for (const beat of bb.beats) {
+        const b = beat.beat;
+        if (b.voice.index !== 0) continue;
+        for (const nb of beat.notes ?? []) {
+          const n = nb.note;
+          if (!want.has(`${b.voice.bar.staff.track.index}:${b.voice.bar.index}:${b.index}:${b.notes.indexOf(n)}`)) continue;
+          const r = nb.noteHeadBounds;
+          boxes.push({ x: r.x - 3, y: r.y - 3, w: r.w + 6, h: r.h + 6 });
+        }
+      }
+      setUncertainBoxes(boxes);
+    };
+    place();
+    return a.postRenderFinished.on(place);
+  }, [showUncertain, song.ai, song.revision]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // create alphaTab once
   useEffect(() => {
@@ -407,8 +457,8 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
 
   // persist practice state
   useEffect(() => {
-    onPatch({ practice: { speed, loop: range, mixer: mix, masterVolume: master, transpose, pitchShift: pitch, visibleTracks: visible, view, capo, amps, trackRigs, playSource, audioMix, videoId: videoId ?? undefined } });
-  }, [speed, range, mix, master, transpose, pitch, visible, view, capo, amps, trackRigs, playSource, audioMix, videoId, onPatch]);
+    onPatch({ practice: { speed, loop: range, mixer: mix, masterVolume: master, transpose, pitchShift: pitch, visibleTracks: visible, view, capo, amps, trackRigs, playSource, audioMix, videoId: videoId ?? undefined, trackSources } });
+  }, [speed, range, mix, master, transpose, pitch, visible, view, capo, amps, trackRigs, playSource, audioMix, videoId, trackSources, onPatch]);
 
   // ------------------------------------------------------------------ actions
   const a = () => apiRef.current;
@@ -639,7 +689,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
         {!readOnly && canEdit && !editor.editing && song.format === 'score' && <button className="btn sm hide-sm" onClick={() => editor.start()} title="Edit this tab">{Icon.edit({ size: 14 })} Edit</button>}
         {!readOnly && <FavoriteButton song={song} onPatch={onPatch} />}
         {song.source.url && <a className="btn sm ghost hide-sm" href={song.source.url} target="_blank" rel="noreferrer" title="Open the original page">{Icon.external({ size: 14 })}</a>}
-        {!readOnly && <SongMenu song={song} onToast={onToast} canEdit={canEdit} onEdit={() => editor.start()} onRevisions={() => setRevs(true)}
+        {!readOnly && <SongMenu song={song} onToast={onToast} canEdit={canEdit} onEdit={() => editor.start()} onRevisions={() => setRevs(true)} onSimplify={() => setSimplifyOpen(true)}
           onExport={(kind) => {
             const a = apiRef.current, sc = scoreRef.current;
             if (!a || !sc) return;
@@ -662,6 +712,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
             <div ref={hostRef} />
             {editor.overlay}
             {markBoxes.map((b, i) => <div key={i} className="diffmark" style={{ left: b.x, top: b.y, width: b.w, height: b.h }} />)}
+            {uncertainBoxes.map((b, i) => <div key={`u${i}`} className="uncertain" title="The AI wasn’t sure of this note" style={{ left: b.x, top: b.y, width: b.w, height: b.h }} />)}
           </div>
           {rendering && <div className="loading-over"><span className="spinner" /><span>{rendering}</span></div>}
         </div>
@@ -672,9 +723,27 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
             <button role="tab" aria-selected={side === 'chords'} onClick={() => setSide('chords')}>Chords</button>
             {hasLyricsTrack >= 0 && <button role="tab" aria-selected={side === 'lyrics'} onClick={() => setSide('lyrics')}>Lyrics</button>}
             {!readOnly && <button role="tab" aria-selected={side === 'audio'} onClick={() => setSide('audio')}>Audio{audio.length ? <span className="dot" aria-label={`${audio.length} recordings`} /> : null}</button>}
+            {!readOnly && song.ai && <button role="tab" aria-selected={side === 'ai'} onClick={() => setSide('ai')}>AI</button>}
             {!readOnly && <button role="tab" aria-selected={side === 'comments'} onClick={() => setSide('comments')}>Notes{song.commentCount ? <span className="dot" aria-label={`${song.commentCount} comments`} /> : null}</button>}
             {window.innerWidth <= 960 && <button aria-label="Close panel" onClick={() => setSide(null)} style={{ flex: '0 0 44px' }}>{Icon.close({ size: 16 })}</button>}
           </div>
+          {side === 'ai' && song.ai && (
+            <AiPanel song={song} bar={bar} onSongChange={(s2) => onSongChange?.(s2)} showUncertain={showUncertain} setShowUncertain={setShowUncertain}
+              playSource={effSource} setPlaySource={setPlaySource} hasRecording={files.length > 0}
+              stemName={song.ai.trackStems?.[focus] ?? null}
+              onSoloStem={(solo) => {
+                const stem = song.ai?.trackStems?.[focus];
+                setAudioMix((cur) => {
+                  const next = { ...cur };
+                  for (const x of files) {
+                    const m = next[x.id] ?? { volume: 1, mute: x.kind === 'original' && files.some((y) => y.kind === 'stem'), solo: false };
+                    next[x.id] = { ...m, solo: solo && x.kind === 'stem' && x.stem === stem };
+                  }
+                  return next;
+                });
+              }}
+              goBar={gotoSection} onSimplify={() => setSimplifyOpen(true)} looping={looping} onLoopBar={toggleLoop} />
+          )}
           {side === 'mixer' && (
             <div className="side-pane">
               {audio.length > 0 && (
@@ -713,6 +782,16 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
                         {!t.staves[0]?.isPercussion && canEdit !== undefined && (
                           <button className={'ampbtn' + (hasAmp ? ' on' : '')} title={hasAmp ? 'Change the rig on this track' : 'Play this track through a rig (amps, cabs, pedals)'} aria-label={`Rig for ${t.name}`} onClick={() => setRigFor(t.index)}>RIG</button>
                         )}
+                        {stemOf(t.index) && (() => {
+                          const mode = trackSources[t.index] ?? 'auto';
+                          const on = !!trackStems[t.index];
+                          const nextMode = mode === 'auto' ? 'stem' : mode === 'stem' ? 'synth' : 'auto';
+                          return (
+                            <button className={'ampbtn' + (on ? ' on' : '')} aria-label={`Sound source for ${t.name}: ${mode}`}
+                              title={mode === 'auto' ? 'Auto: plays the AI stem when you solo this track. Click for always stem.' : mode === 'stem' ? 'Always the AI stem. Click for always synth.' : 'Always the synth. Click for auto.'}
+                              onClick={() => setTrackSources((cur) => ({ ...cur, [t.index]: nextMode }))}>{mode === 'auto' ? (on ? 'AI·A' : 'AUTO') : mode === 'stem' ? 'AI' : 'SYN'}</button>
+                          );
+                        })()}
                         <button className={'vis' + (visible.includes(t.index) ? ' on' : '')} title="Show this track in the score" aria-pressed={visible.includes(t.index)} onClick={() => toggleVisible(t.index)}>👁</button>
                       </span>
                       <span style={{ display: 'flex', gap: 4 }}>
@@ -916,6 +995,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
       </div>
       {tuner && <Tuner tuning={focusTuning.length ? focusTuning : [64, 59, 55, 50, 45, 40]} tuningLabel={tuningLabel} referencePitch={prefs.referencePitch} onClose={() => setTuner(false)} />}
       {help && <ShortcutsHelp onClose={() => setHelp(false)} />}
+      {simplifyOpen && <SimplifyDialog song={song} onClose={() => setSimplifyOpen(false)} onRevisions={() => setRevs(true)} />}
       {revs && <RevisionsDialog song={song} onClose={() => setRevs(false)} onChanged={(s2) => { onSongChange?.(s2); }} onHighlight={(b) => setMarks(b)} />}
       {rigFor !== null && tracks[rigFor] && (
         <TrackRigDialog trackName={tracks[rigFor].name || `Track ${rigFor + 1}`} value={trackRigs[rigFor]} legacyAmp={ampActive(amps[rigFor]) ? amps[rigFor] : undefined}
@@ -985,8 +1065,8 @@ function FavoriteButton({ song, onPatch }: { song: SongRecord; onPatch: (p: Part
   );
 }
 
-function SongMenu({ song, onToast, canEdit, onEdit, onRevisions, onExport }: {
-  song: SongRecord; onToast: (m: string) => void; canEdit: boolean; onEdit: () => void; onRevisions: () => void; onExport: (k: 'gp' | 'midi' | 'tex' | 'print') => void;
+function SongMenu({ song, onToast, canEdit, onEdit, onRevisions, onExport, onSimplify }: {
+  song: SongRecord; onToast: (m: string) => void; canEdit: boolean; onEdit: () => void; onRevisions: () => void; onExport: (k: 'gp' | 'midi' | 'tex' | 'print') => void; onSimplify: () => void;
 }) {
   const { prefs, user } = useApp();
   const [open, setOpen] = useState(false);
@@ -1012,6 +1092,7 @@ function SongMenu({ song, onToast, canEdit, onEdit, onRevisions, onExport }: {
           ) : (
             <>
               {canEdit && song.format === 'score' && <button className="btn sm ghost" onClick={() => { close(); onEdit(); }}>{Icon.edit({ size: 14 })} Edit tab</button>}
+              {canEdit && song.format === 'score' && <button className="btn sm ghost" onClick={() => { close(); onSimplify(); }}>{Icon.minus({ size: 14 })} Easier version…</button>}
               {song.format === 'score' && <button className="btn sm ghost" onClick={() => { close(); onRevisions(); }}>{Icon.history({ size: 14 })} Revisions{song.revisionCount ? ` (${song.revisionCount})` : ''}</button>}
               <button className="btn sm ghost" onClick={() => setSub('playlist')}>{Icon.list({ size: 14 })} Add to playlist…</button>
               <button className="btn sm ghost" onClick={() => setSub('export')}>{Icon.download({ size: 14 })} Export…</button>

@@ -32,6 +32,8 @@ export interface EngineInputs {
   audio: AudioAsset[];
   /** the YouTube video played when playSource is 'video' */
   video?: AudioAsset | null;
+  /** tab mode: tracks that play their AI stem instead of the synth (AI track autoswitch) */
+  trackStems?: Record<number, AudioAsset>;
   mix: Mix;
   audioMix: AudioMix;
   master: number;
@@ -103,6 +105,38 @@ function rigPlan(track: number, trackRigs: Record<string, TrackRig>, amps: Recor
   return null;
 }
 const decoded = new Map<string, Promise<{ ch: Int16Array[]; durationMs: number }>>();
+const warpCache = new Map<string, Int16Array[]>();
+
+/** tab ms <-> recording ms pairs from an asset's sync points */
+function syncPairs(x: AudioAsset, tl: Timeline): { synthMs: number; audioMs: number }[] {
+  return x.syncPoints.map((p) => {
+    const b = tl.bars.find((y) => y.index === p.bar && y.occurrence === p.occurrence) ?? tl.bars.find((y) => y.index === p.bar);
+    return b ? { synthMs: b.startMs, audioMs: p.ms } : null;
+  }).filter((y): y is { synthMs: number; audioMs: number } => !!y).sort((a, b) => a.synthMs - b.synthMs);
+}
+
+/**
+ * Resamples a recording so it lines up with the tab's own timeline, segment by segment between
+ * sync points. For AI tabs (made from the recording) the rate stays ~1, so pitch is untouched.
+ */
+export function warpToTab(src: Int16Array, pts: { synthMs: number; audioMs: number }[], offsetMs: number, outLen: number, rate: number): Int16Array {
+  const out = new Int16Array(outLen);
+  const toS = (ms: number) => (ms / 1000) * rate;
+  const segs = pts.length >= 2 ? pts : [{ synthMs: 0, audioMs: offsetMs }, { synthMs: 1000, audioMs: offsetMs + 1000 }];
+  let k = 0;
+  for (let i = 0; i < outLen; i++) {
+    const ms = (i / rate) * 1000;
+    while (k < segs.length - 2 && segs[k + 1].synthMs <= ms) k++;
+    const a = segs[k], b = segs[k + 1];
+    const r = (b.audioMs - a.audioMs) / Math.max(1e-6, b.synthMs - a.synthMs);
+    const pos = toS(a.audioMs + (ms - a.synthMs) * r);
+    const j = Math.floor(pos);
+    if (j < 0 || j + 1 >= src.length) continue;
+    const f = pos - j;
+    out[i] = src[j] + (src[j + 1] - src[j]) * f;
+  }
+  return out;
+}
 
 function cachePut<V>(m: Map<string, V>, k: string, v: V, max: number) {
   m.set(k, v);
@@ -163,7 +197,9 @@ export function useEngine(inp: EngineInputs): EngineState {
     return out;
   }, [amps, trackRigs, rigs, score]);
   const ampedTracks = useMemo(() => Object.keys(plans).map(Number), [plans]);
-  const want = playSource === 'video' ? isVideo : playSource === 'recording' ? audio.length > 0 : ampedTracks.length > 0;
+  const stemTracks = inp.trackStems ?? {};
+  const stemKey = Object.entries(stemTracks).map(([t, x]) => `${t}:${x.id}`).join(',');
+  const want = playSource === 'video' ? isVideo : playSource === 'recording' ? audio.length > 0 : ampedTracks.length > 0 || stemKey !== '';
 
   const engine = () => (engineRef.current ??= new MixEngine());
   const ytClock = () => {
@@ -249,7 +285,7 @@ export function useEngine(inp: EngineInputs): EngineState {
   }, []);
 
   // ------------------------------------------------------------------ prepare sources
-  const prepKey = !want ? '' : isVideo ? `video|${scoreKey}|${video!.id}|${video!.youtubeId}|${video!.syncPoints.length}|${video!.offsetMs}|${video!.barPoints?.length ?? 0}` : want ? `${playSource}|${scoreKey}|${playSource === 'tab' ? ampedTracks.map((t) => `${t}:${plans[t].key}:${rigQualityLevel}`).join(',') : audio.map((x) => x.id + x.syncPoints.length + x.offsetMs).join(',')}` : '';
+  const prepKey = !want ? '' : isVideo ? `video|${scoreKey}|${video!.id}|${video!.youtubeId}|${video!.syncPoints.length}|${video!.offsetMs}|${video!.barPoints?.length ?? 0}` : want ? `${playSource}|${scoreKey}|${playSource === 'tab' ? ampedTracks.map((t) => `${t}:${plans[t].key}:${rigQualityLevel}`).join(',') + `|stems:${stemKey}` : audio.map((x) => x.id + x.syncPoints.length + x.offsetMs).join(',')}` : '';
 
   useEffect(() => {
     const a = apiRef.current;
@@ -351,7 +387,23 @@ export function useEngine(inp: EngineInputs): EngineState {
             }
             setTracks({ ...st });
           }
-          keepOnly(e, Array.from({ length: n }, (_, i) => `t${i}`));
+          // AI track autoswitch: stems warped onto the tab's timeline
+          const stemIds = [...new Set(Object.values(stemTracks).map((x) => x.id))];
+          for (const id of stemIds) {
+            if (signal.aborted) return;
+            const x = Object.values(stemTracks).find((y) => y.id === id)!;
+            setPreparing(`Loading the ${x.name.toLowerCase()} stem`);
+            const pts = syncPairs(x, tl);
+            const wkey = `${id}|${scoreKey}|${JSON.stringify(pts)}|${maxLen}`;
+            let w = warpCache.get(wkey);
+            if (!w) {
+              const d = await decodeAsset(x);
+              w = d.ch.map((c) => warpToTab(c, pts, x.offsetMs, maxLen, ENGINE_RATE));
+              cachePut(warpCache, wkey, w, 6);
+            }
+            e.setSource(`s${id}`, w, { scale: 1 / 32767 });
+          }
+          keepOnly(e, [...Array.from({ length: n }, (_, i) => `t${i}`), ...stemIds.map((id) => `s${id}`)]);
           durationRef.current = Math.max(tl.endMs, (maxLen / ENGINE_RATE) * 1000);
           e.setDuration(tl.endMs);
           const c = tl.clicks();
@@ -422,9 +474,13 @@ export function useEngine(inp: EngineInputs): EngineState {
     const e = engineRef.current;
     if (!e) return;
     if (c.playSource === 'tab') {
+      const stems = c.trackStems ?? {};
       for (const t of c.score?.tracks ?? []) {
         const m = c.mix[t.index] ?? { volume: 1, mute: false, solo: false };
-        e.mix(`t${t.index}`, { gain: m.volume, mute: m.mute, solo: m.solo });
+        const stem = stems[t.index];
+        // a track switched to its stem: the synth render goes quiet and the stem takes its fader
+        e.mix(`t${t.index}`, stem ? { gain: m.volume, mute: true, solo: false } : { gain: m.volume, mute: m.mute, solo: m.solo });
+        if (stem) e.mix(`s${stem.id}`, { gain: m.volume * Math.pow(10, stem.gainDb / 20), mute: m.mute, solo: m.solo });
       }
     } else {
       const hasStems = c.audio.some((x) => x.kind === 'stem');

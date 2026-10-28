@@ -62,6 +62,7 @@ export function AppMenu({ route }: { route: Route }) {
           <a href="#/mine" aria-current={cur({ name: 'library', view: 'mine' })}>{Icon.edit({ size: 17 })} My tabs</a>
           <a href="#/offline" aria-current={cur({ name: 'library', view: 'offline' })}>{Icon.download({ size: 17 })} Offline</a>
           {user?.role !== 'viewer' && <a href="#/new" aria-current={cur({ name: 'new' })}>{Icon.plus({ size: 17 })} New tab</a>}
+          {user?.role !== 'viewer' && <a href="#/ai" aria-current={cur({ name: 'ai' })}>{Icon.cpu({ size: 17 })} AI tab from audio</a>}
         </div>
         {playlists.length > 0 && (
           <div className="drawer-group">
@@ -76,7 +77,7 @@ export function AppMenu({ route }: { route: Route }) {
           <a href="#/rig/find" aria-current={cur({ name: 'rig', tab: 'find' })}>{Icon.search({ size: 17 })} Find NAM models</a>
         </div>
         <div className="drawer-group">
-          <a href="#/jobs" aria-current={cur({ name: 'jobs' })}>{Icon.cpu({ size: 17 })} AI jobs</a>
+          <a href="#/jobs" aria-current={cur({ name: 'jobs' })}>{Icon.history({ size: 17 })} Background jobs</a>
           <a href="#/settings" aria-current={cur({ name: 'settings' })}>{Icon.settings({ size: 17 })} Settings</a>
         </div>
       </nav>
