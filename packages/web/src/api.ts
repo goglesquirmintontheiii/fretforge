@@ -29,7 +29,9 @@ const files = (fs: File[], field = 'file') => {
 
 export interface RigImport { added: RigFile[]; existing: RigFile[]; errors: { name: string; message: string }[] }
 
-export interface SongQuery { q?: string; instrument?: Instrument | 'all'; sort?: string; favorites?: boolean; limit?: number; tuning?: string; source?: string; audio?: boolean; playlist?: string; mine?: boolean; offline?: boolean }
+export interface Facet { name: string; count: number }
+export interface LibraryFacets { tunings: (Facet & { family: string | null })[]; families: Facet[]; bodies: Facet[]; tones: Facet[] }
+export interface SongQuery { q?: string; instrument?: Instrument | 'all'; sort?: string; favorites?: boolean; limit?: number; tuning?: string; family?: string; body?: string; tone?: string; source?: string; audio?: boolean; playlist?: string; mine?: boolean; offline?: boolean }
 
 export const api = {
   status: () => call<StatusResponse>('/api/status'),
@@ -57,6 +59,9 @@ export const api = {
     if (q.favorites) p.set('favorites', '1');
     if (q.limit) p.set('limit', String(q.limit));
     if (q.tuning) p.set('tuning', q.tuning);
+    if (q.family) p.set('family', q.family);
+    if (q.body) p.set('body', q.body);
+    if (q.tone) p.set('tone', q.tone);
     if (q.source) p.set('source', q.source);
     if (q.audio) p.set('audio', '1');
     if (q.playlist) p.set('playlist', q.playlist);
@@ -64,7 +69,7 @@ export const api = {
     if (q.offline) p.set('offline', '1');
     return call<{ songs: SongRecord[]; total: number }>(`/api/songs?${p}`);
   },
-  facets: () => call<{ tunings: { name: string; count: number }[] }>('/api/library/facets'),
+  facets: () => call<LibraryFacets>('/api/library/facets'),
   offlineSongs: () => call<{ songs: SongRecord[] }>('/api/offline'),
   createSong: (bytes: Uint8Array) => call<SongRecord>('/api/songs', bin(bytes as BodyInit)),
   revisions: (id: string) => call<{ current: number; revisions: Revision[] }>(`/api/songs/${id}/revisions`),
@@ -129,6 +134,8 @@ export const api = {
     fd.append('render', wav, 'render.wav');
     return call<Job>(`/api/audio/${id}/align`, { method: 'POST', body: fd });
   },
+  addVideo: (songId: string, url: string, name?: string) => call<AudioAsset>(`/api/songs/${songId}/videos`, json({ url, name })),
+  songsterrVideos: (songId: string) => call<{ videos: AudioAsset[] }>(`/api/songs/${songId}/videos/songsterr`, { method: 'POST' }),
   youtube: (songId: string, url: string) => call<Job>(`/api/songs/${songId}/youtube`, json({ url })),
   jobs: () => call<{ jobs: Job[]; ai: StatusResponse['ai'] }>('/api/jobs'),
   cancelJob: (id: string) => call(`/api/jobs/${id}`, { method: 'DELETE' }),
@@ -156,5 +163,6 @@ export const api = {
 
   onlineSearch: (source: OnlineResult['source'], q: string, signal?: AbortSignal) =>
     call<OnlineSearchResponse>(`/api/online/search?source=${source}&q=${encodeURIComponent(q)}`, { signal }),
+  verifyOnline: (source: OnlineResult['source']) => call<{ ok: true }>('/api/online/verify', json({ source })),
   openOnline: (source: OnlineResult['source'], ref: string, refresh = false) => call<SongRecord>('/api/online/open', json({ source, ref, refresh })),
 };

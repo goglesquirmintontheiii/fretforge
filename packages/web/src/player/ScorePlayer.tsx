@@ -7,6 +7,8 @@ import { go, useApp } from '../lib/app';
 import { patchSynthOutput } from '../lib/alphaTabFixes';
 import { transposeScore } from '../lib/transpose';
 import { useWakeLock } from '../lib/wakeLock';
+import { MenuButton } from '../components/AppMenu';
+import { VideoDock } from './VideoDock';
 import { Icon, InstrumentIcon } from '../components/icons';
 import { ChordDiagram } from '../components/ChordDiagram';
 import { Fretboard } from './Fretboard';
@@ -93,7 +95,10 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
   const [countIn, setCountIn] = useState(false);
   const [transpose, setTranspose] = useState(p.transpose ?? 0);
   const [pitch, setPitch] = useState(p.pitchShift ?? 0);
-  const [view, setView] = useState<View>(p.view ?? 'both');
+  // the view is one setting for every song (0.2.0 request): changing it here changes it everywhere
+  const [view, setViewState] = useState<View>(prefs.view ?? p.view ?? 'tab');
+  const setView = useCallback((v: View) => { setViewState(v); setPrefs({ view: v }); }, [setPrefs]);
+  useEffect(() => { if (prefs.view && prefs.view !== view) setViewState(prefs.view); }, [prefs.view]); // eslint-disable-line react-hooks/exhaustive-deps
   const [visible, setVisible] = useState<number[]>(() => (p.visibleTracks?.length ? p.visibleTracks : defaultTracks(song, prefs.instrument)).filter((i) => i < Math.max(1, song.tracks.length)));
   const [focus, setFocus] = useState<number>(() => visible[0] ?? 0);
   const [mix, setMix] = useState<Mix>(() => Object.fromEntries(Object.entries(p.mixer ?? {}).map(([k, v]) => [Number(k), v])));
@@ -123,11 +128,15 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
 
   const loadAudio = useCallback(() => { if (!readOnly) api.audio(song.id).then((r) => setAudio(r.audio)).catch(() => {}); }, [song.id, readOnly]);
   useEffect(() => { loadAudio(); }, [loadAudio]);
-  const effSource: PlaySource = playSource === 'recording' && audio.length ? 'recording' : 'tab';
+  const [videoId, setVideoId] = useState<string | null>(p.videoId ?? null);
+  const files = useMemo(() => audio.filter((x) => x.kind !== 'video'), [audio]);
+  const videos = useMemo(() => audio.filter((x) => x.kind === 'video'), [audio]);
+  const video = videos.find((v) => v.id === videoId) ?? videos[0] ?? null;
+  const effSource: PlaySource = playSource === 'recording' && files.length ? 'recording' : playSource === 'video' && video ? 'video' : 'tab';
 
   const [editingNow, setEditingNow] = useState(!!edit);
   const engine = useEngine({
-    apiRef, score, scoreKey, song, amps: editingNow ? {} : amps, trackRigs: editingNow ? {} : trackRigs, rigs: rigList, playSource: editingNow ? 'tab' : effSource, audio: editingNow ? [] : audio, mix, audioMix, master, speed, pitch, metro, metroVol, countIn, looping, range, onToast,
+    apiRef, score, scoreKey, song, amps: editingNow ? {} : amps, trackRigs: editingNow ? {} : trackRigs, rigs: rigList, playSource: editingNow ? 'tab' : effSource, audio: editingNow ? [] : files, video: editingNow ? null : video, mix, audioMix, master, speed, pitch, metro, metroVol, countIn, looping, range, onToast,
   });
   const engineOn = useRef(false);
   engineOn.current = engine.active;
@@ -142,31 +151,46 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
   const restoredLoop = useRef(false);
 
   // ------------------------------------------------------------------ audio state -> alphaTab
+  // alphaTab's playbackSpeed setter re-seeks (it rescales timePosition), which stops every
+  // sounding note, and the metronome setter reloads a preset. So only touch what changed:
+  // moving a volume slider must never interrupt the sound.
+  const appliedMix = useRef(new WeakMap<object, Map<number, string>>());
   const applyAudio = useCallback(() => {
     const a = apiRef.current, s = scoreRef.current;
     if (!a || !s) return;
     const c = st.current;
+    const set = <K extends 'playbackSpeed' | 'masterVolume' | 'metronomeVolume' | 'countInVolume' | 'isLooping'>(k: K, v: alphaTab.AlphaTabApi[K]) => {
+      if (a[k] !== v) a[k] = v;
+    };
     if (engineOn.current) {
       // the mixer engine plays the sound; alphaTab only follows its clock
-      a.playbackSpeed = 1;
-      a.metronomeVolume = 0;
-      a.countInVolume = 0;
-      a.isLooping = false;
-      a.playbackRange = null;
+      set('playbackSpeed', 1);
+      set('metronomeVolume', 0);
+      set('countInVolume', 0);
+      set('isLooping', false);
+      if (a.playbackRange) a.playbackRange = null;
       return;
     }
-    a.playbackSpeed = c.speed;
-    a.masterVolume = c.master;
-    a.metronomeVolume = c.metro ? c.metroVol : 0;
-    a.countInVolume = c.countIn ? 1 : 0;
-    a.isLooping = c.looping;
+    set('playbackSpeed', c.speed);
+    set('masterVolume', c.master);
+    set('metronomeVolume', c.metro ? c.metroVol : 0);
+    set('countInVolume', c.countIn ? 1 : 0);
+    set('isLooping', c.looping);
+    let done = appliedMix.current.get(s);
+    if (!done) { done = new Map(); appliedMix.current.set(s, done); }
     for (const t of s.tracks) {
       const m = c.mix[t.index] ?? { volume: 1, mute: false, solo: false };
-      a.changeTrackVolume([t], m.volume);
-      a.changeTrackMute([t], m.mute);
-      a.changeTrackSolo([t], m.solo);
+      const prev = done.get(t.index)?.split('|');
+      if (!prev || prev[0] !== String(m.volume)) a.changeTrackVolume([t], m.volume);
+      if (!prev || prev[1] !== String(m.mute)) a.changeTrackMute([t], m.mute);
+      if (!prev || prev[2] !== String(m.solo)) a.changeTrackSolo([t], m.solo);
+      done.set(t.index, `${m.volume}|${m.mute}|${m.solo}`);
     }
-    a.changeTrackTranspositionPitch(s.tracks.filter((t) => !t.staves[0]?.isPercussion), engineOn.current ? 0 : c.pitch);
+    const pitchKey = `pitch:${engineOn.current ? 0 : c.pitch}`;
+    if (done.get(-1) !== pitchKey) {
+      a.changeTrackTranspositionPitch(s.tracks.filter((t) => !t.staves[0]?.isPercussion), engineOn.current ? 0 : c.pitch);
+      done.set(-1, pitchKey);
+    }
   }, []);
 
   // ------------------------------------------------------------------ build + render
@@ -264,8 +288,9 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
       }
     });
     a.soundFontLoad.on((e) => setSfProgress(e.total ? e.loaded / e.total : 0));
-    a.playerReady.on(() => { setReady(true); applyAudio(); patchSynthOutput(a.player?.output); });
+    a.playerReady.on(() => { setReady(true); appliedMix.current = new WeakMap(); applyAudio(); patchSynthOutput(a.player?.output); });
     a.midiLoaded.on(() => {
+      appliedMix.current = new WeakMap(); // a new MIDI load resets channel state
       applyAudio();
       // renders are cached by this key: same song, revision, transposition and edit state = same audio
       setScoreKey(`${song.id}:${song.hash}:${song.revision ?? 0}:${transposeRef.current}:${editVersion.current}`);
@@ -382,8 +407,8 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
 
   // persist practice state
   useEffect(() => {
-    onPatch({ practice: { speed, loop: range, mixer: mix, masterVolume: master, transpose, pitchShift: pitch, visibleTracks: visible, view, capo, amps, trackRigs, playSource, audioMix } });
-  }, [speed, range, mix, master, transpose, pitch, visible, view, capo, amps, trackRigs, playSource, audioMix, onPatch]);
+    onPatch({ practice: { speed, loop: range, mixer: mix, masterVolume: master, transpose, pitchShift: pitch, visibleTracks: visible, view, capo, amps, trackRigs, playSource, audioMix, videoId: videoId ?? undefined } });
+  }, [speed, range, mix, master, transpose, pitch, visible, view, capo, amps, trackRigs, playSource, audioMix, videoId, onPatch]);
 
   // ------------------------------------------------------------------ actions
   const a = () => apiRef.current;
@@ -587,6 +612,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
       <div className="player-head">
         {!readOnly && <button className="iconbtn" onClick={async () => { if (!editor.editing || (await editor.stop())) onClose(); }} aria-label="Back to library">{Icon.back()}</button>}
         {readOnly && <img src="/icon.svg" alt="Fretforge" width={28} height={28} />}
+        {!readOnly && <MenuButton />}
         <div className="grow" style={{ minWidth: 0 }}>
           <h1>{song.title}</h1>
           <div className="who">{song.artist || 'Unknown artist'}{song.tempo ? ` · ${Math.round(song.tempo)} bpm` : ''}</div>
@@ -629,13 +655,16 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
       </div>
 
       <div className="player-body">
-        <div className="scorewrap" ref={wrapRef}>
+        <div className="scorecol">
+        {engine.yt && <VideoDock yt={engine.yt} title={video?.name ?? 'Video'} error={engine.videoError} />}
+        <div className="scorewrap" data-barhl={prefs.barHighlight ?? 'subtle'} ref={wrapRef}>
           <div className="hostwrap">
             <div ref={hostRef} />
             {editor.overlay}
             {markBoxes.map((b, i) => <div key={i} className="diffmark" style={{ left: b.x, top: b.y, width: b.w, height: b.h }} />)}
           </div>
           {rendering && <div className="loading-over"><span className="spinner" /><span>{rendering}</span></div>}
+        </div>
         </div>
         <aside className="side" hidden={!side} aria-label="Song panel">
           <div className="side-tabs" role="tablist">
@@ -651,7 +680,8 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
               {audio.length > 0 && (
                 <div className="chips" role="group" aria-label="What plays">
                   <button className="chip" aria-pressed={effSource === 'tab'} onClick={() => setPlaySource('tab')}>Tab sound</button>
-                  <button className="chip" aria-pressed={effSource === 'recording'} onClick={() => setPlaySource('recording')}>Recording</button>
+                  {files.length > 0 && <button className="chip" aria-pressed={effSource === 'recording'} onClick={() => setPlaySource('recording')}>Recording</button>}
+                  {videos.length > 0 && <button className="chip" aria-pressed={effSource === 'video'} onClick={() => setPlaySource('video')}>Video</button>}
                 </div>
               )}
               {engine.preparing && (
@@ -694,8 +724,9 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
                     </div>
                   );
                 })}
-                {effSource === 'recording' && audio.map((x) => {
-                  const hasStems = audio.some((y) => y.kind === 'stem');
+                {effSource === 'video' && <p className="muted" style={{ margin: 0, fontSize: 13 }}>Playing “{video?.name}” from YouTube. Its volume follows the master fader.</p>}
+                {effSource === 'recording' && files.map((x) => {
+                  const hasStems = files.some((y) => y.kind === 'stem');
                   const m = audioMix[x.id] ?? { volume: 1, mute: hasStems && x.kind === 'original', solo: false, pan: 0 };
                   const setM = (patch: Partial<typeof m>) => setAudioMix((cur) => ({ ...cur, [x.id]: { ...m, ...patch } }));
                   return (
@@ -733,7 +764,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
           {side === 'comments' && <CommentsPanel songId={song.id} bar={bar} revision={song.revision ?? 0} onGoto={(b) => gotoSection(b)} />}
           {side === 'audio' && (
             <AudioPanel songId={song.id} audio={audio} onAudioChanged={loadAudio} playSource={effSource} setPlaySource={setPlaySource}
-              api={apiRef.current} audioMs={engine.audioMs} canEdit={canEdit} />
+              api={apiRef.current} audioMs={engine.audioMs} canEdit={canEdit} videoId={video?.id ?? null} setVideoId={setVideoId} fromSongsterr={song.source.kind === 'songsterr'} />
           )}
           {side === 'chords' && (
             <div className="side-pane">

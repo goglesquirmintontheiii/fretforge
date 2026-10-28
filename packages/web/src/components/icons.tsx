@@ -6,6 +6,9 @@ const svg = (d: React.ReactNode, { size = 18, className }: P = {}, vb = '0 0 24 
 );
 
 export const Icon = {
+  menu: (p?: P) => svg(<><path d="M4 7h16M4 12h16M4 17h16" /></>, p),
+  folder: (p?: P) => svg(<><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></>, p),
+  cpu: (p?: P) => svg(<><rect x="6" y="6" width="12" height="12" rx="2" /><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" /></>, p),
   search: (p?: P) => svg(<><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></>, p),
   play: (p?: P) => svg(<path d="M7 4.5v15l13-7.5z" fill="currentColor" stroke="none" />, p),
   pause: (p?: P) => svg(<><rect x="6" y="4.5" width="4" height="15" rx="1" fill="currentColor" stroke="none" /><rect x="14" y="4.5" width="4" height="15" rx="1" fill="currentColor" stroke="none" /></>, p),

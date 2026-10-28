@@ -3,6 +3,7 @@ import { basename, dirname, extname, isAbsolute, join, relative } from 'node:pat
 import MiniSearch from 'minisearch';
 import chokidar, { type FSWatcher } from 'chokidar';
 import type { Instrument, Revision, SongRecord, SongSource, TextTab } from '@fretforge/shared';
+import { guitarBody, guitarTone, stringFamily, type GuitarBody, type GuitarTone, type StringFamily } from '@fretforge/shared';
 import { Store, contentHash, shortId } from './store';
 import { ALL_EXTENSIONS, SCORE_EXTENSIONS, exportGp7, extOf, loadScore, summarizeScore, UnsupportedFormatError } from './score';
 import type * as alphaTab from '@coderline/alphatab';
@@ -21,6 +22,10 @@ export interface ListQuery {
   /** personal fields (favorites, recent) come from this user */
   userId: string;
   tuning?: string;
+  /** string family, e.g. guitar7, bass5, guitar12 */
+  family?: StringFamily;
+  body?: GuitarBody;
+  tone?: GuitarTone;
   source?: string;
   /** only songs with recordings/stems */
   withAudio?: boolean;
@@ -336,7 +341,13 @@ export class Library {
     if (q.ids && text) { const set = new Set(q.ids); songs = songs.filter((s) => set.has(s.id)); }
     songs = songs.map((s) => this.store.songFor(q.userId, s));
     if (q.instrument && q.instrument !== 'all') songs = songs.filter((s) => s.instruments.includes(q.instrument as Instrument));
-    if (q.tuning) songs = songs.filter((s) => s.tracks.some((t) => t.tuningName === q.tuning));
+    if (q.tuning || q.family || q.body || q.tone) {
+      // all conditions must hold on the same track
+      songs = songs.filter((s) => s.tracks.some((t) => (!q.tuning || t.tuningName === q.tuning)
+        && (!q.family || stringFamily(t) === q.family)
+        && (!q.body || guitarBody(t) === q.body)
+        && (!q.tone || guitarTone(t) === q.tone)));
+    }
     if (q.source) songs = songs.filter((s) => s.source.kind === q.source || (q.source === 'local' && s.source.kind === 'upload'));
     if (q.withAudio) songs = songs.filter((s) => (s.audioCount ?? 0) > 0);
     if (q.favorites) songs = songs.filter((s) => s.favorite);

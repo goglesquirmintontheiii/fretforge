@@ -3,6 +3,7 @@ import type { Comment } from '@fretforge/shared';
 import { api } from '../api';
 import { go, useApp, type Route } from '../lib/app';
 import { Icon } from './icons';
+import { MenuButton, openSearch } from './AppMenu';
 
 export function TopBar({ route }: { route: Route }) {
   const [q, setQ] = useState(route.name === 'search' ? route.q : '');
@@ -19,10 +20,10 @@ export function TopBar({ route }: { route: Route }) {
     const on = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable;
-      if ((e.key === 'k' && (e.ctrlKey || e.metaKey)) || (e.key === '/' && !typing)) {
+      if (e.key === '/' && !typing) {
         e.preventDefault();
-        input.current?.focus();
-        input.current?.select();
+        // the inline field is hidden on phones; the floating search works everywhere
+        if (input.current && input.current.offsetParent) { input.current.focus(); input.current.select(); } else openSearch();
       }
     };
     window.addEventListener('keydown', on);
@@ -44,6 +45,7 @@ export function TopBar({ route }: { route: Route }) {
   if (route.name === 'song') return null;
   return (
     <header className="topbar">
+      <MenuButton />
       <a className="brand" href="#/" aria-label="Fretforge library">
         <img src="/icon.svg" alt="" />
         <b>Fret<span>forge</span></b>
@@ -51,8 +53,9 @@ export function TopBar({ route }: { route: Route }) {
       <form className="topsearch" role="search" onSubmit={(e) => { e.preventDefault(); if (q.trim()) go(`/search?q=${encodeURIComponent(q.trim())}`); }}>
         {Icon.search({ size: 16 })}
         <input ref={input} type="search" id="global-search" value={q} onChange={(e) => setQ(e.target.value)}
-          placeholder="Search your library, Songsterr and Ultimate Guitar…" aria-label="Search songs" autoComplete="off" />
+          placeholder="Search your library and the tab sites…  (Ctrl K)" aria-label="Search songs" autoComplete="off" />
       </form>
+      <button className="iconbtn only-sm" onClick={() => openSearch(q)} aria-label="Search">{Icon.search()}</button>
       <nav className="nav" aria-label="Sections">
         <a href="#/" aria-current={route.name === 'library' ? 'page' : undefined}>{Icon.library()}<span>Library</span></a>
         <a href="#/rig" aria-current={route.name === 'rig' ? 'page' : undefined}>{Icon.amp()}<span>Rig</span></a>

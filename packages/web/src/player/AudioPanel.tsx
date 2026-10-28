@@ -53,9 +53,10 @@ export function JobRow({ j, onCancel }: { j: Job; onCancel?: () => void }) {
   );
 }
 
-export function AudioPanel({ songId, audio, onAudioChanged, playSource, setPlaySource, api: at, audioMs, canEdit }: {
+export function AudioPanel({ songId, audio, onAudioChanged, playSource, setPlaySource, api: at, audioMs, canEdit, videoId, setVideoId, fromSongsterr }: {
   songId: string; audio: AudioAsset[]; onAudioChanged: () => void; playSource: PlaySource; setPlaySource: (s: PlaySource) => void;
   api: alphaTab.AlphaTabApi | null; audioMs: () => number; canEdit: boolean;
+  videoId: string | null; setVideoId: (id: string) => void; fromSongsterr: boolean;
 }) {
   const { toast } = useApp();
   const { jobs, ai, refresh } = useJobs(songId);
@@ -83,6 +84,26 @@ export function AudioPanel({ songId, audio, onAudioChanged, playSource, setPlayS
   };
 
   const originals = audio.filter((a) => a.kind === 'original');
+  const videos = audio.filter((a) => a.kind === 'video');
+  const files = audio.filter((a) => a.kind !== 'video');
+  const addVideo = async () => {
+    try {
+      const v = await api.addVideo(songId, yt.trim());
+      setYt('');
+      onAudioChanged();
+      setVideoId(v.id);
+      setPlaySource('video');
+    } catch (err) { toast((err as Error).message); }
+  };
+  const findSongsterr = async () => {
+    setBusy(true);
+    try {
+      const r = await api.songsterrVideos(songId);
+      onAudioChanged();
+      toast(r.videos.length ? `Found ${r.videos.length} video${r.videos.length === 1 ? '' : 's'} synced on Songsterr` : 'Songsterr has no synced videos for this tab.');
+      if (r.videos.length && !videoId) setVideoId(r.videos[0].id);
+    } catch (err) { toast((err as Error).message); } finally { setBusy(false); }
+  };
   const stemsOf = (id: string) => audio.filter((a) => a.parentId === id).sort((a, b) => STEM_ORDER.indexOf(a.stem ?? '') - STEM_ORDER.indexOf(b.stem ?? ''));
   const activeJobs = jobs.filter((j) => j.state === 'queued' || j.state === 'running');
 
@@ -91,8 +112,39 @@ export function AudioPanel({ songId, audio, onAudioChanged, playSource, setPlayS
       {audio.length > 0 && (
         <div className="chips" role="group" aria-label="What plays">
           <button className="chip" aria-pressed={playSource === 'tab'} onClick={() => setPlaySource('tab')}>Tab sound</button>
-          <button className="chip" aria-pressed={playSource === 'recording'} onClick={() => setPlaySource('recording')}>Recording</button>
+          {files.length > 0 && <button className="chip" aria-pressed={playSource === 'recording'} onClick={() => setPlaySource('recording')}>Recording</button>}
+          {videos.length > 0 && <button className="chip" aria-pressed={playSource === 'video'} onClick={() => { if (!videoId) setVideoId(videos[0].id); setPlaySource('video'); }}>Video</button>}
         </div>
+      )}
+      {videos.length > 0 && (
+        <div className="videolist" role="radiogroup" aria-label="Videos">
+          {videos.map((v) => {
+            const on = playSource === 'video' && videoId === v.id;
+            return (
+              <div key={v.id} className={`asset video${on ? ' on' : ''}`}>
+                <div className="row" style={{ justifyContent: 'space-between', gap: 6, flexWrap: 'nowrap' }}>
+                  <button className="vpick" role="radio" aria-checked={on} onClick={() => { setVideoId(v.id); setPlaySource('video'); }}>
+                    <img src={`https://i.ytimg.com/vi/${v.youtubeId}/mqdefault.jpg`} alt="" loading="lazy" width={64} height={36} />
+                    <span style={{ minWidth: 0 }}>
+                      <span className="nm" title={v.name}>{v.name}</span>
+                      <span className="faint" style={{ fontSize: 12, display: 'block' }}>
+                        {v.syncPoints.length ? `synced (${v.syncPoints.length} points)` : v.barPoints?.length ? 'synced by Songsterr' : v.offsetMs ? `offset ${v.offsetMs} ms` : 'not synced'}
+                        {v.offsetMs && (v.barPoints?.length || v.syncPoints.length) ? ` · ${v.offsetMs > 0 ? '+' : ''}${v.offsetMs} ms` : ''}
+                      </span>
+                    </span>
+                  </button>
+                  {canEdit && <button className="iconbtn" aria-label={`Remove ${v.name}`} onClick={async () => { if (await askConfirm(`Remove “${v.name}”?`, { ok: 'Remove', danger: true })) { await api.deleteAudio(v.id); onAudioChanged(); } }}>{Icon.trash({ size: 15 })}</button>}
+                </div>
+                {canEdit && on && <button className="btn sm" onClick={() => setSyncing(syncing === v.id ? null : v.id)} aria-expanded={syncing === v.id}>Adjust sync</button>}
+                {syncing === v.id && <SyncTools asset={v} api={at} audioMs={audioMs} aiReady={false} onSaved={onAudioChanged} recordingMode={on} />}
+              </div>
+            );
+          })}
+          <p className="faint" style={{ margin: 0, fontSize: 12 }}>Videos play from YouTube in the floating player. Speed follows the tab (0.25x–2x); pitch shift and the metronome don’t apply.</p>
+        </div>
+      )}
+      {canEdit && fromSongsterr && !videos.some((v) => v.videoSource === 'songsterr') && (
+        <button className="btn sm" onClick={findSongsterr} disabled={busy}>{busy ? <span className="spinner" /> : null} Find Songsterr’s synced videos</button>
       )}
       {originals.map((a) => (
         <div key={a.id} className="asset">
@@ -128,13 +180,15 @@ export function AudioPanel({ songId, audio, onAudioChanged, playSource, setPlayS
             <button className="btn sm" onClick={() => fileRef.current?.click()} disabled={busy}>{busy ? <span className="spinner" /> : Icon.upload({ size: 14 })} Add a recording</button>
             <input ref={fileRef} type="file" hidden accept=".flac,.wav,.mp3,.m4a,.aac,.ogg,.oga,.opus,.webm,audio/*" onChange={(e) => { upload([...(e.target.files ?? [])]); e.target.value = ''; }} />
           </div>
-          <form className="row" style={{ gap: 6, flexWrap: 'nowrap' }} onSubmit={async (e) => { e.preventDefault(); try { await api.youtube(songId, yt.trim()); setYt(''); refresh(); toast('Getting the audio…'); } catch (err) { toast((err as Error).message); } }}>
-            <input type="text" id="yt-url" className="grow" placeholder="YouTube link" value={yt} onChange={(e) => setYt(e.target.value)} aria-label="YouTube link" />
-            <button className="btn sm" disabled={!yt.trim()}>Get audio</button>
+          <form className="row" style={{ gap: 6, flexWrap: 'wrap' }} onSubmit={(e) => { e.preventDefault(); void addVideo(); }}>
+            <input type="text" id="yt-url" className="grow" placeholder="YouTube link" value={yt} onChange={(e) => setYt(e.target.value)} aria-label="YouTube link" style={{ minWidth: 140 }} />
+            <button className="btn sm primary" disabled={!yt.trim()} title="Play the video in Fretforge, synced to the tab">Add video</button>
+            <button type="button" className="btn sm" disabled={!yt.trim()} title="Download the audio as a recording (for stems and the mixer)"
+              onClick={async () => { try { await api.youtube(songId, yt.trim()); setYt(''); refresh(); toast('Getting the audio…'); } catch (err) { toast((err as Error).message); } }}>Get audio</button>
           </form>
         </>
       )}
-      {!audio.length && <p className="muted" style={{ margin: 0, fontSize: 13 }}>Add the original recording to play along with it, mute your part, or split it into instruments with the AI tools.</p>}
+      {!audio.length && <p className="muted" style={{ margin: 0, fontSize: 13 }}>Add a YouTube video or the original recording to play along with it. Recordings can be split into instruments with the AI tools.</p>}
     </div>
   );
 }

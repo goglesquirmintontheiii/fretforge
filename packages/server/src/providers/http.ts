@@ -7,10 +7,20 @@ export interface ProviderContext {
   fetchHtml?: (url: string) => Promise<string>;
   /** Plain fetch sends browser-like headers; Chromium's net.fetch sets its own. */
   browserHeaders?: boolean;
+  /**
+   * Desktop: shows a site in a window so the user can complete its browser check themselves.
+   * Resolves once the page loads normally, rejects if the user closes the window.
+   */
+  verify?: (url: string) => Promise<void>;
 }
 
 export class ProviderError extends Error {
   constructor(message: string, readonly status?: number) { super(message); }
+}
+
+/** the site showed a "are you a person" check that only the user can complete */
+export class BrowserCheckError extends ProviderError {
+  readonly browserCheck = true;
 }
 
 const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
@@ -44,10 +54,21 @@ export async function getJson<T>(ctx: ProviderContext, url: string, referer?: st
 }
 
 export async function getHtml(ctx: ProviderContext, url: string): Promise<string> {
-  if (ctx.fetchHtml) return ctx.fetchHtml(url);
+  if (ctx.fetchHtml) {
+    try {
+      return await ctx.fetchHtml(url);
+    } catch (e) {
+      if ((e as { browserCheck?: boolean }).browserCheck) throw new BrowserCheckError(`${new URL(url).host.replace(/^(www|tabs)\./, '')} wants to check that a person is browsing.`);
+      throw e;
+    }
+  }
   const res = await request(ctx, url, 'html');
+  const text = await res.text();
+  if (/challenge-platform|cf-chl|Just a moment\.\.\./i.test(text) && (!res.ok || text.length < 30000)) {
+    throw new BrowserCheckError(`${new URL(url).host.replace(/^(www|tabs)\./, '')} wants to check that a person is browsing.`, res.status);
+  }
   if (!res.ok) throw new ProviderError(`${new URL(url).host} answered ${res.status}`, res.status);
-  return res.text();
+  return text;
 }
 
 const ENTITIES: Record<string, string> = { quot: '"', amp: '&', lt: '<', gt: '>', apos: "'", nbsp: ' ' };

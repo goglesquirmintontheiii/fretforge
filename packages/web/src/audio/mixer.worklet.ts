@@ -23,6 +23,9 @@ interface Source {
   length: number;
   gain: number;
   pan: number;
+  /** gains heard last block (ramped toward the target so volume, mute and solo never click) */
+  curL?: number;
+  curR?: number;
   mute: boolean;
   solo: boolean;
   /** timeline frame where this source's sample 0 plays */
@@ -118,6 +121,7 @@ class MixerProcessor extends AudioWorkletProcessor {
           id: m.id, ch: m.ch, scale: m.scale ?? (m.ch[0] instanceof Int16Array ? 1 / 32767 : 1), length: m.ch[0]?.length ?? 0,
           gain: m.gain ?? old?.gain ?? 1, pan: m.pan ?? old?.pan ?? 0, mute: m.mute ?? old?.mute ?? false, solo: m.solo ?? old?.solo ?? false,
           offset: m.offsetMs !== undefined ? Math.round((m.offsetMs / 1000) * sampleRate) : old?.offset ?? 0,
+          curL: old?.curL, curR: old?.curR,
         };
         this.sources = [...this.sources.filter((x) => x.id !== m.id), s];
         break;
@@ -214,16 +218,29 @@ class MixerProcessor extends AudioWorkletProcessor {
   private mixSegment(start: number, n: number, L: Float32Array, R: Float32Array, o: number) {
     const anySolo = this.sources.some((s) => s.solo);
     for (const s of this.sources) {
-      if (s.mute || (anySolo && !s.solo) || s.gain <= 0) continue;
+      const silent = s.mute || (anySolo && !s.solo) || s.gain <= 0;
+      const g = silent ? 0 : s.gain * s.scale;
+      const tl = g * Math.min(1, 1 - s.pan), tr = g * Math.min(1, 1 + s.pan);
+      const cl = s.curL ?? tl, cr = s.curR ?? tr;
+      s.curL = tl;
+      s.curR = tr;
+      if (tl === 0 && tr === 0 && cl === 0 && cr === 0) continue;
       const a = start - s.offset;
       const from = Math.max(0, -a), to = Math.min(n, s.length - a);
       if (to <= from) continue;
-      const g = s.gain * s.scale;
-      const gl = g * Math.min(1, 1 - s.pan), gr = g * Math.min(1, 1 + s.pan);
       const c0 = s.ch[0], c1 = s.ch[1] ?? s.ch[0];
-      for (let i = from; i < to; i++) {
-        L[o + i] += c0[a + i] * gl;
-        R[o + i] += c1[a + i] * gr;
+      if (cl === tl && cr === tr) {
+        for (let i = from; i < to; i++) {
+          L[o + i] += c0[a + i] * tl;
+          R[o + i] += c1[a + i] * tr;
+        }
+      } else {
+        // linear ramp across this block
+        const dl = (tl - cl) / n, dr = (tr - cr) / n;
+        for (let i = from; i < to; i++) {
+          L[o + i] += c0[a + i] * (cl + dl * i);
+          R[o + i] += c1[a + i] * (cr + dr * i);
+        }
       }
     }
     if (this.metroOn && this.clicks.length) this.mixClicks(start, n, L, R, o);

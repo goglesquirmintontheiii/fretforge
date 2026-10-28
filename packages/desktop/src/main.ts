@@ -34,17 +34,21 @@ async function browserFetch(input: string | URL | Request, init?: RequestInit): 
   return webSession.fetch(url, { ...init, headers });
 }
 
+// Pages that render client-side get a few seconds in a hidden window. If the site shows a
+// person check, we stop and let the user complete it in a visible window (verifySite).
 async function loadInHiddenWindow(url: string): Promise<string> {
   const w = new BrowserWindow({ show: false, width: 1200, height: 900, webPreferences: { session: webSession, sandbox: true, contextIsolation: true } });
   try {
     await w.loadURL(url).catch(() => {});
-    const deadline = Date.now() + 25_000;
+    const deadline = Date.now() + 8_000;
+    let html = '';
     while (Date.now() < deadline) {
-      const html: string = await w.webContents.executeJavaScript('document.documentElement.outerHTML').catch(() => '');
+      html = await w.webContents.executeJavaScript('document.documentElement.outerHTML').catch(() => '');
       if (html && !challenge(html) && (/js-store|id="state"/.test(html) || html.length > 50_000)) return html;
-      await new Promise((r) => setTimeout(r, 600));
+      await new Promise((r) => setTimeout(r, 500));
     }
-    throw new Error('The site kept showing a browser check. Open it once in your browser, then try again.');
+    if (html && !challenge(html)) return html;
+    throw Object.assign(new Error('The site wants to check that a person is browsing.'), { browserCheck: true });
   } finally {
     w.destroy();
   }
@@ -57,6 +61,34 @@ async function fetchHtml(url: string): Promise<string> {
     if (res.ok && !challenge(text)) return text;
   } catch { /* fall through to the hidden window */ }
   return loadInHiddenWindow(url);
+}
+
+let verifying: Promise<void> | null = null;
+/** Show the site in a normal window; the user completes its check, the cookie lands in webSession. */
+function verifySite(url: string): Promise<void> {
+  if (verifying) return verifying;
+  verifying = new Promise<void>((resolve, reject) => {
+    const w = new BrowserWindow({
+      parent: win ?? undefined, width: 900, height: 760, title: 'Complete the site’s check: Fretforge', autoHideMenuBar: true,
+      webPreferences: { session: webSession, sandbox: true, contextIsolation: true },
+    });
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      clearInterval(timer);
+      if (!w.isDestroyed()) w.destroy();
+      if (ok) resolve(); else reject(Object.assign(new Error('The check wasn’t completed.'), { statusCode: 400 }));
+    };
+    const timer = setInterval(async () => {
+      if (w.isDestroyed()) return;
+      const html: string = await w.webContents.executeJavaScript('document.documentElement.outerHTML').catch(() => '');
+      if (html && !challenge(html) && html.length > 20_000) setTimeout(() => finish(true), 800);
+    }, 1000);
+    w.on('closed', () => finish(false));
+    w.loadURL(url).catch(() => {});
+  }).finally(() => { verifying = null; });
+  return verifying;
 }
 
 // ------------------------------------------------------------------ window state
@@ -87,7 +119,7 @@ async function start() {
   try {
     server = await createServer(
       { dataDir, libraryDir, host: '127.0.0.1', port: 0, mode: 'desktop', desktopToken: token, staticDir, version: VERSION, seedDemos: true },
-      { fetch: browserFetch as typeof fetch, fetchHtml, browserHeaders: false },
+      { fetch: browserFetch as typeof fetch, fetchHtml, verify: verifySite, browserHeaders: false },
     );
   } catch (e) {
     dialog.showErrorBox('Fretforge couldn’t start', String((e as Error)?.stack || e));

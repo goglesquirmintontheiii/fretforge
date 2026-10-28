@@ -80,3 +80,26 @@ export function chordsInContent(lines: TextLine[]): string[] {
   for (const l of lines) for (const s of l.segments) if (s.kind === 'chord' && !seen.has(s.value)) { seen.add(s.value); out.push(s.value); }
   return out;
 }
+
+const CHORD_TOKEN = /^\(?[A-G][#b]?(?:maj|min|m|dim|aug|sus|add|M|\+|°|ø)?[0-9]{0,2}(?:(?:add|sus|maj|b|#|\+|-)?[0-9]{1,2})*(?:\/[A-G][#b]?)?\)?$/;
+
+/** true for a token that reads as a chord name */
+export function isChordToken(t: string): boolean {
+  return CHORD_TOKEN.test(t);
+}
+
+/**
+ * Plain-text chord sheets (chords on their own line above lyrics) to the [ch] markup the
+ * text view understands. Lines that are all chords (and bar marks or repeat counts) get their
+ * chords wrapped in place; everything else is left alone.
+ */
+export function markChords(plain: string): string {
+  return plain.replace(/\r\n?/g, '\n').split('\n').map((line) => {
+    const tokens = line.trim().split(/\s+/).filter(Boolean);
+    if (!tokens.length || /\[ch\]/i.test(line)) return line;
+    const chords = tokens.filter((t) => isChordToken(t));
+    const filler = tokens.filter((t) => !isChordToken(t) && /^(\||x\d+|\d+x|-+|\/+|N\.C\.|\(|\)|%)$/i.test(t));
+    if (!chords.length || chords.length + filler.length !== tokens.length) return line;
+    return line.replace(/\S+/g, (t) => (isChordToken(t) ? `[ch]${t}[/ch]` : t));
+  }).join('\n');
+}

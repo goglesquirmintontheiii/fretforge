@@ -1,5 +1,5 @@
 import type { Instrument, OnlineResult, TextTab } from '@fretforge/shared';
-import { decodeEntities, getHtml, ProviderError, type ProviderContext } from './http';
+import { BrowserCheckError, decodeEntities, getHtml, ProviderError, type ProviderContext } from './http';
 
 const SITE = 'https://www.ultimate-guitar.com';
 
@@ -24,7 +24,7 @@ interface UgResult {
 export function extractStore(html: string): any {
   const m = /class="js-store"\s+data-content="([^"]*)"/.exec(html) || /data-content="([^"]*)"\s+class="js-store"/.exec(html);
   if (!m) {
-    if (/challenge-platform|cf-chl|Just a moment/i.test(html)) throw new ProviderError('Ultimate Guitar asked for a browser check. Try again from the desktop app.');
+    if (/challenge-platform|cf-chl|Just a moment/i.test(html)) throw new BrowserCheckError('Ultimate Guitar wants to check that a person is browsing.');
     throw new ProviderError('Couldn’t read the Ultimate Guitar page. The site layout may have changed.');
   }
   return JSON.parse(decodeEntities(m[1]));

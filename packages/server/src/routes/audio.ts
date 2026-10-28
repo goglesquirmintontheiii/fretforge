@@ -7,6 +7,8 @@ import { httpError, requireRole } from '../auth';
 import { registerStems } from '../jobs';
 import { newId } from '../store';
 import { describeRigFile } from './rig';
+import { addSongsterrVideos, addVideo, youtubeId } from '../videos';
+import { fetchSongsterrRevision, fetchSongsterrVideos, songsterrIds } from '../providers/songsterr';
 
 const AUDIO_TYPES: Record<string, string> = {
   '.flac': 'audio/flac', '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.aac': 'audio/aac',
@@ -91,8 +93,35 @@ export function registerAudio(app: FastifyInstance, ctx: Ctx) {
     return { added };
   });
 
+  // ---------------------------------------------------------------- YouTube videos
+  app.post('/api/songs/:id/videos', async (req) => {
+    requireRole(req, 'owner', 'member');
+    const s = getSong((req.params as { id: string }).id);
+    const { url, name } = (req.body ?? {}) as { url?: string; name?: string };
+    const id = youtubeId(url ?? '');
+    if (!id) throw httpError(400, 'Paste a YouTube link.');
+    return addVideo(store, s.id, { youtubeId: id, name: name?.trim() || 'YouTube video', source: 'link' });
+  });
+
+  /** fetch the videos Songsterr syncs with this tab (for songs imported before 0.6) */
+  app.post('/api/songs/:id/videos/songsterr', async (req) => {
+    requireRole(req, 'owner', 'member');
+    const s = getSong((req.params as { id: string }).id);
+    if (s.source.kind !== 'songsterr') throw httpError(400, 'Only tabs from Songsterr have synced videos.');
+    const sid = songsterrIds(s.source.ref) ?? songsterrIds(s.source.url ?? '');
+    if (!sid) throw httpError(400, 'This tab’s Songsterr id is missing.');
+    let rev = s.source.revision;
+    if (!rev) {
+      try { rev = await fetchSongsterrRevision(ctx.providers, sid); } catch (e) { throw httpError(502, (e as Error).message); }
+      store.patch(s.id, { source: { ...s.source, revision: rev } });
+    }
+    const added = addSongsterrVideos(store, s.id, await fetchSongsterrVideos(ctx.providers, sid, rev));
+    return { videos: added };
+  });
+
   app.get('/api/audio/:id/raw', async (req, reply) => {
     const a = getAudio((req.params as { id: string }).id);
+    if (a.kind === 'video') throw httpError(400, 'Videos play from YouTube.');
     const path = join(cfg.dataDir, a.file);
     if (!existsSync(path)) throw httpError(404, 'The audio file is missing.');
     reply.header('Content-Type', a.mime).header('Content-Length', statSync(path).size).header('Cache-Control', 'private, max-age=86400');
@@ -127,7 +156,7 @@ export function registerAudio(app: FastifyInstance, ctx: Ctx) {
     requireRole(req, 'owner', 'member');
     const a = getAudio((req.params as { id: string }).id);
     for (const x of [a, ...store.audioFor(a.songId).filter((s) => s.parentId === a.id)]) {
-      try { unlinkSync(join(cfg.dataDir, x.file)); } catch { /* ignore */ }
+      if (x.file) try { unlinkSync(join(cfg.dataDir, x.file)); } catch { /* ignore */ }
       store.removeAudio(x.id);
     }
     return { ok: true };
@@ -137,6 +166,7 @@ export function registerAudio(app: FastifyInstance, ctx: Ctx) {
   app.get('/api/jobs', async () => ({ jobs: store.jobs().slice(0, 200), ai: jobs.status() }));
 
   app.post('/api/audio/:id/separate', async (req) => {
+    if (store.audio((req.params as { id: string }).id)?.kind === 'video') throw httpError(400, 'Use “Get audio” on a YouTube link to separate it.');
     const u = requireRole(req, 'owner', 'member');
     const a = getAudio((req.params as { id: string }).id);
     if (a.kind !== 'original') throw httpError(400, 'Separate the full recording, not a stem.');

@@ -6,6 +6,7 @@ import * as alphaTab from '@coderline/alphatab';
 import { ampToRig, emptyRig, rigAtBar, type AmpSettings, type AudioAsset, type PlaySource, type RigDoc, type SongRecord, type TrackRig } from '@fretforge/shared';
 import { ENGINE_RATE, ampActive, audioContext, processRigTrack, rigKey, rigQualityLevel, toInt16, type RigSegment } from '../audio/engine';
 import { MixEngine } from '../audio/mixEngine';
+import { YtClock } from '../audio/ytClock';
 import { SyncMap, Timeline, isSilent, renderTrack } from '../audio/tabAudio';
 import { api as server } from '../api';
 import { patchSynthOutput } from '../lib/alphaTabFixes';
@@ -27,7 +28,10 @@ export interface EngineInputs {
   /** the rig library (for track rigs) */
   rigs: RigDoc[];
   playSource: PlaySource;
+  /** recordings and stems (files) */
   audio: AudioAsset[];
+  /** the YouTube video played when playSource is 'video' */
+  video?: AudioAsset | null;
   mix: Mix;
   audioMix: AudioMix;
   master: number;
@@ -52,6 +56,9 @@ export interface EngineState {
   /** current position in the recording (recording mode) or the tab timeline */
   audioMs: () => number;
   timeline: () => Timeline | null;
+  /** the YouTube player, while a video is the source */
+  yt: YtClock | null;
+  videoError: string | null;
 }
 
 const renderCache = new Map<string, Float32Array>();
@@ -128,8 +135,14 @@ async function decodeAsset(a: AudioAsset): Promise<{ ch: Int16Array[]; durationM
 }
 
 export function useEngine(inp: EngineInputs): EngineState {
-  const { apiRef, score, scoreKey, amps, trackRigs, rigs, playSource, audio } = inp;
+  const { apiRef, score, scoreKey, amps, trackRigs, rigs, playSource, audio, video } = inp;
   const engineRef = useRef<MixEngine | null>(null);
+  const ytRef = useRef<YtClock | null>(null);
+  const [yt, setYt] = useState<YtClock | null>(null);
+  const [videoError, setVideoError] = useState<string | null>(null);
+  const isVideo = playSource === 'video' && !!video?.youtubeId;
+  const videoRef = useRef(isVideo);
+  videoRef.current = isVideo;
   const [active, setActiveState] = useState(false);
   const activeRef = useRef(false);
   const setActive = (v: boolean) => { activeRef.current = v; setActiveState(v); };
@@ -150,9 +163,32 @@ export function useEngine(inp: EngineInputs): EngineState {
     return out;
   }, [amps, trackRigs, rigs, score]);
   const ampedTracks = useMemo(() => Object.keys(plans).map(Number), [plans]);
-  const want = playSource === 'recording' ? audio.length > 0 : ampedTracks.length > 0;
+  const want = playSource === 'video' ? isVideo : playSource === 'recording' ? audio.length > 0 : ampedTracks.length > 0;
 
   const engine = () => (engineRef.current ??= new MixEngine());
+  const ytClock = () => {
+    if (!ytRef.current) {
+      const c = new YtClock();
+      ytRef.current = c;
+      c.onPosition((ms) => {
+        if (!activeRef.current || !videoRef.current) return;
+        const out = apiRef.current?.player?.output as unknown as alphaTab.synth.IExternalMediaSynthOutput | undefined;
+        out?.updatePosition?.(syncRef.current.toSynth(ms));
+      });
+      c.onEnded(() => { if (activeRef.current && videoRef.current) apiRef.current?.stop(); });
+      c.onRemote((playing) => {
+        if (!activeRef.current || !videoRef.current) return;
+        const a = apiRef.current;
+        const isPlaying = a?.playerState === alphaTab.synth.PlayerState.Playing;
+        if (playing && !isPlaying) a?.play(); else if (!playing && isPlaying) a?.pause();
+      });
+      c.onError((m) => setVideoError(m));
+      setYt(c);
+    }
+    return ytRef.current;
+  };
+  /** what alphaTab follows right now */
+  const clock = (): MixEngine | YtClock => (videoRef.current ? ytClock() : engine());
 
   // ------------------------------------------------------------------ switch alphaTab between synth and external media
   const setPlayerMode = (external: boolean) => {
@@ -176,20 +212,21 @@ export function useEngine(inp: EngineInputs): EngineState {
     const a = apiRef.current;
     const out = a?.player?.output as unknown as alphaTab.synth.IExternalMediaSynthOutput | undefined;
     if (!a || !out || !('handler' in out)) return;
-    const e = engine();
     out.handler = {
       get backingTrackDuration() { return durationRef.current; },
       get playbackRate() { return 1; },
       set playbackRate(_v: number) { /* speed is applied by the engine */ },
       get masterVolume() { return 1; },
       set masterVolume(_v: number) { /* master is applied by the engine */ },
-      seekTo: (ms: number) => e.seek(syncRef.current.toAudio(ms)),
+      seekTo: (ms: number) => clock().seek(syncRef.current.toAudio(ms)),
       play: () => {
         const c = live.current;
         const t = timelineRef.current;
-        void e.play(c.countIn && t ? t.countIn(syncRef.current.toSynth(e.lastMs)) : undefined);
+        const k = clock();
+        if (k instanceof YtClock) { void k.play(); return; }
+        void k.play(c.countIn && t ? t.countIn(syncRef.current.toSynth(k.lastMs)) : undefined);
       },
-      pause: () => e.pause(),
+      pause: () => clock().pause(),
     };
   };
 
@@ -197,19 +234,22 @@ export function useEngine(inp: EngineInputs): EngineState {
   useEffect(() => {
     const e = engine();
     const off = e.onPosition((ms) => {
-      if (!activeRef.current) return;
+      if (!activeRef.current || videoRef.current) return;
       const out = apiRef.current?.player?.output as unknown as alphaTab.synth.IExternalMediaSynthOutput | undefined;
       out?.updatePosition?.(syncRef.current.toSynth(ms));
     });
-    const offEnd = e.onEnded(() => { if (activeRef.current) apiRef.current?.stop(); });
+    const offEnd = e.onEnded(() => { if (activeRef.current && !videoRef.current) apiRef.current?.stop(); });
     void e.whenReady().then(() => setLatencyMs(e.latencyMs)).catch(() => {});
     return () => { off(); offEnd(); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => () => { engineRef.current?.destroy(); engineRef.current = null; }, []);
+  useEffect(() => () => {
+    engineRef.current?.destroy(); engineRef.current = null;
+    ytRef.current?.destroy(); ytRef.current = null;
+  }, []);
 
   // ------------------------------------------------------------------ prepare sources
-  const prepKey = want ? `${playSource}|${scoreKey}|${playSource === 'tab' ? ampedTracks.map((t) => `${t}:${plans[t].key}:${rigQualityLevel}`).join(',') : audio.map((x) => x.id + x.syncPoints.length + x.offsetMs).join(',')}` : '';
+  const prepKey = !want ? '' : isVideo ? `video|${scoreKey}|${video!.id}|${video!.youtubeId}|${video!.syncPoints.length}|${video!.offsetMs}|${video!.barPoints?.length ?? 0}` : want ? `${playSource}|${scoreKey}|${playSource === 'tab' ? ampedTracks.map((t) => `${t}:${plans[t].key}:${rigQualityLevel}`).join(',') : audio.map((x) => x.id + x.syncPoints.length + x.offsetMs).join(',')}` : '';
 
   useEffect(() => {
     const a = apiRef.current;
@@ -218,6 +258,7 @@ export function useEngine(inp: EngineInputs): EngineState {
         setPlayerMode(false);
         setActive(false);
         engineRef.current?.pause();
+        ytRef.current?.pause();
       }
       setPreparing(null);
       return;
@@ -230,6 +271,25 @@ export function useEngine(inp: EngineInputs): EngineState {
         await e.whenReady();
         const tl = new Timeline(a);
         timelineRef.current = tl;
+        if (isVideo) {
+          // the video plays; the mixer stays silent
+          e.pause();
+          keepOnly(e, []);
+          ytRef.current?.pause();
+          setVideoError(null);
+          setPreparing('Loading the video');
+          const v = video!;
+          const k = ytClock();
+          await k.load(v.youtubeId!);
+          if (signal.aborted) return;
+          syncRef.current = videoSync(v, tl);
+          durationRef.current = syncRef.current.toSynth(k.durationMs);
+          applyMix();
+          if (!activeRef.current) { setPlayerMode(true); setActive(true); } else installHandler();
+          setPreparing(null);
+          return;
+        }
+        ytRef.current?.pause();
         if (playSource === 'tab') {
           syncRef.current = new SyncMap([]);
           const n = score.tracks.length;
@@ -348,8 +408,18 @@ export function useEngine(inp: EngineInputs): EngineState {
 
   // ------------------------------------------------------------------ live settings
   const applyMix = () => {
-    const e = engineRef.current;
     const c = live.current;
+    const tl = timelineRef.current;
+    if (videoRef.current) {
+      const k = ytRef.current;
+      if (!k) return;
+      k.setMaster(c.master);
+      k.setRate(c.speed);
+      const r = c.looping && c.range && tl ? tl.barRange(c.range.startBar, c.range.endBar) : null;
+      k.setLoop(r ? { startMs: syncRef.current.toAudio(r.startMs), endMs: syncRef.current.toAudio(r.endMs) } : null);
+      return;
+    }
+    const e = engineRef.current;
     if (!e) return;
     if (c.playSource === 'tab') {
       for (const t of c.score?.tracks ?? []) {
@@ -367,14 +437,17 @@ export function useEngine(inp: EngineInputs): EngineState {
     e.setRate(c.speed);
     e.setPitch(c.pitch);
     e.setMetronome(c.metro, c.metroVol);
-    const tl = timelineRef.current;
     const r = c.looping && c.range && tl ? tl.barRange(c.range.startBar, c.range.endBar) : null;
     e.setLoop(r ? { startMs: syncRef.current.toAudio(r.startMs), endMs: syncRef.current.toAudio(r.endMs) } : null);
   };
 
   useEffect(() => { if (active) applyMix(); }, [active, inp.mix, inp.audioMix, inp.master, inp.speed, inp.pitch, inp.metro, inp.metroVol, inp.looping, inp.range]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { active, preparing, progress, tracks, latencyMs, audioMs: () => engineRef.current?.lastMs ?? 0, timeline: () => timelineRef.current };
+  return {
+    active, preparing, progress, tracks, latencyMs: isVideo ? 0 : latencyMs,
+    audioMs: () => (videoRef.current ? ytRef.current?.lastMs : engineRef.current?.lastMs) ?? 0,
+    timeline: () => timelineRef.current, yt: isVideo ? yt : null, videoError: isVideo ? videoError : null,
+  };
 }
 
 /** stereo float to 16-bit with one shared scale */
@@ -386,4 +459,32 @@ function toInt16Stereo(L: Float32Array, R: Float32Array | null): { ch: Int16Arra
   const a = new Int16Array(L.length), b = new Int16Array(R.length);
   for (let i = 0; i < L.length; i++) { a[i] = Math.round(L[i] * inv); b[i] = Math.round(R[i] * inv); }
   return { ch: [a, b], scale };
+}
+
+/**
+ * Timing of a video against the tab: the user's sync points when there are any, else
+ * Songsterr's bar points (one per played bar, in playback order), else a constant offset.
+ */
+export function videoSync(v: AudioAsset, tl: Timeline): SyncMap {
+  if (v.syncPoints.length) {
+    const pts = v.syncPoints.map((p) => {
+      const b = tl.bars.find((x) => x.index === p.bar && x.occurrence === p.occurrence) ?? tl.bars.find((x) => x.index === p.bar);
+      return b ? { synthMs: b.startMs, audioMs: p.ms } : null;
+    }).filter((x): x is { synthMs: number; audioMs: number } => !!x).sort((x, y) => x.synthMs - y.synthMs);
+    return new SyncMap(pts, v.offsetMs);
+  }
+  const bp = v.barPoints ?? [];
+  if (bp.length >= 2) {
+    const played = tl.bars;
+    // points per played bar (with repeats); if the count matches the written bars instead, use first plays
+    const written = [...new Map(played.map((b) => [b.index, b])).values()].sort((a, b) => a.index - b.index);
+    const bars = bp.length >= played.length || bp.length !== written.length ? played : written;
+    const pts: { synthMs: number; audioMs: number }[] = [];
+    for (let i = 0; i < Math.min(bars.length, bp.length); i++) pts.push({ synthMs: bars[i].startMs, audioMs: bp[i] * 1000 + v.offsetMs });
+    // a trailing point marks the end of the last bar
+    if (bp.length > bars.length && bars.length) pts.push({ synthMs: bars[bars.length - 1].endMs, audioMs: bp[bars.length] * 1000 + v.offsetMs });
+    for (let i = 1; i < pts.length; i++) if (pts[i].audioMs <= pts[i - 1].audioMs) pts[i].audioMs = pts[i - 1].audioMs + 1;
+    return new SyncMap(pts, v.offsetMs);
+  }
+  return new SyncMap([], v.offsetMs);
 }

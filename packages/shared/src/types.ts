@@ -2,7 +2,17 @@ export type Instrument = 'guitar' | 'bass' | 'drums' | 'keys' | 'vocals' | 'othe
 
 export type SongFormat = 'score' | 'text';
 
-export type SourceKind = 'local' | 'upload' | 'demo' | 'songsterr' | 'ultimate-guitar' | 'created';
+export type SourceKind = 'local' | 'upload' | 'demo' | 'songsterr' | 'ultimate-guitar' | 'guitartabs' | 'created';
+
+export type OnlineSource = 'songsterr' | 'ultimate-guitar' | 'guitartabs' | 'guitar-pro' | 'guitar-ch';
+
+export const ONLINE_SOURCES: { id: OnlineSource; label: string; pref: keyof Prefs['sources']; short: string }[] = [
+  { id: 'songsterr', label: 'Songsterr', pref: 'songsterr', short: 'SR' },
+  { id: 'ultimate-guitar', label: 'Ultimate Guitar', pref: 'ultimateGuitar', short: 'UG' },
+  { id: 'guitartabs', label: 'GuitarTabs.cc', pref: 'guitartabs', short: 'GT' },
+  { id: 'guitar-pro', label: 'Guitar Pro (mySongBook)', pref: 'guitarPro', short: 'GP' },
+  { id: 'guitar-ch', label: 'guitar.ch', pref: 'guitarCh', short: 'CH' },
+];
 
 export interface TrackSummary {
   index: number;
@@ -26,6 +36,8 @@ export interface SongSource {
   variant?: string;
   rating?: number;
   votes?: number;
+  /** Songsterr revision the tab came from (for its synced videos) */
+  revision?: number;
 }
 
 export interface SongRecord {
@@ -90,7 +102,7 @@ export const defaultAmp: AmpSettings = {
   bassDb: 0, midDb: 0, trebleDb: 0, lowCutHz: 0, highCutHz: 0, irMix: 1,
 };
 
-export type PlaySource = 'tab' | 'recording';
+export type PlaySource = 'tab' | 'recording' | 'video';
 
 export interface PracticeState {
   /** per tab track index: the 0.4 amp (still played; converted to a rig on the fly) */
@@ -99,6 +111,8 @@ export interface PracticeState {
   trackRigs?: Record<string, import('./rig').TrackRig>;
   /** what plays: the synth/amp renders of the tab, or the recording and its stems */
   playSource?: PlaySource;
+  /** the video (asset id) played when playSource is 'video' */
+  videoId?: string;
   /** mixer state for audio assets by asset id */
   audioMix?: Record<string, { volume: number; mute: boolean; solo: boolean; pan?: number }>;
   speed?: number;
@@ -130,7 +144,7 @@ export interface ChordShape {
 }
 
 export interface OnlineResult {
-  source: 'songsterr' | 'ultimate-guitar';
+  source: OnlineSource;
   /** Provider-specific id used to open the result. */
   ref: string;
   title: string;
@@ -143,12 +157,20 @@ export interface OnlineResult {
   url: string;
   /** Library song id when this result is already saved. */
   savedId?: string;
+  /** false for catalogs Fretforge can only link to (paid PDFs, subscriptions) */
+  openable?: boolean;
+  /** shown with link-only results, e.g. "Needs a mySongBook subscription" */
+  note?: string;
+  /** e.g. acoustic, electric (from the source when it says) */
+  kind?: string;
 }
 
 export interface OnlineSearchResponse {
   source: OnlineResult['source'];
   results: OnlineResult[];
   error?: string;
+  /** the site wants a person to pass a browser check (the desktop app can show it) */
+  browserCheck?: boolean;
 }
 
 export interface AiSettings {
@@ -170,7 +192,7 @@ export interface Prefs {
   referencePitch: number;
   countInBars: number;
   followCursor: boolean;
-  sources: { songsterr: boolean; ultimateGuitar: boolean };
+  sources: { songsterr: boolean; ultimateGuitar: boolean; guitartabs: boolean; guitarPro: boolean; guitarCh: boolean };
   autoSaveOnline: boolean;
   libraryDir: string;
   zoom: number;
@@ -203,7 +225,7 @@ export const defaultPrefs: Prefs = {
   referencePitch: 440,
   countInBars: 1,
   followCursor: true,
-  sources: { songsterr: true, ultimateGuitar: true },
+  sources: { songsterr: true, ultimateGuitar: true, guitartabs: true, guitarPro: true, guitarCh: true },
   autoSaveOnline: true,
   libraryDir: '',
   zoom: 1,
@@ -367,7 +389,15 @@ export interface SyncPoint {
 export interface AudioAsset {
   id: string;
   songId: string;
-  kind: 'original' | 'stem';
+  /** a file (recording or stem) or a YouTube video played in the embedded player */
+  kind: 'original' | 'stem' | 'video';
+  /** video: YouTube video id */
+  youtubeId?: string;
+  /** video: where it came from and what it is (Songsterr: full mix, backing, solo, playthrough) */
+  videoSource?: 'songsterr' | 'link';
+  feature?: string | null;
+  /** video: seconds at the start of each played bar in playback order (Songsterr's video points) */
+  barPoints?: number[];
   stem?: StemName;
   /** asset the stem was separated from */
   parentId?: string;

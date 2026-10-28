@@ -1,10 +1,18 @@
 import { useEffect, useState } from 'react';
-import type { Invite, PublicUser, Role } from '@fretforge/shared';
+import { ONLINE_SOURCES, type Invite, type PublicUser, type Role } from '@fretforge/shared';
 import { api } from '../api';
 import { useApp } from '../lib/app';
 import { askConfirm } from '../lib/dialog';
 import { offlineSupported, offlineUsage } from '../lib/offline';
 import { JobRow, useJobs } from '../player/AudioPanel';
+
+const SOURCE_NOTES: Record<string, string> = {
+  songsterr: 'full multi-track tabs that play',
+  'ultimate-guitar': 'free chords and text tabs',
+  guitartabs: 'free text tabs and chords',
+  'guitar-pro': 'official tabs; link only, needs a mySongBook subscription',
+  'guitar-ch': 'PDF transcriptions; link only, needs a subscription',
+};
 
 const ROLE_LABEL: Record<Role, string> = { owner: 'Owner', member: 'Member', viewer: 'Viewer' };
 
@@ -44,8 +52,11 @@ export function SettingsView() {
         <section className="card setcard">
           <h3>Online tabs</h3>
           <p className="muted" style={{ margin: 0 }}>Search results from these sites appear under your library results. Opening one downloads it into your library so it works offline.</p>
-          <label className="row"><input type="checkbox" id="set-songsterr" checked={prefs.sources.songsterr} onChange={(e) => setPrefs({ sources: { ...prefs.sources, songsterr: e.target.checked } })} /> Songsterr (full multi-track tabs that play)</label>
-          <label className="row"><input type="checkbox" id="set-ug" checked={prefs.sources.ultimateGuitar} onChange={(e) => setPrefs({ sources: { ...prefs.sources, ultimateGuitar: e.target.checked } })} /> Ultimate Guitar (free chords and text tabs)</label>
+          {ONLINE_SOURCES.map((src) => (
+            <label key={src.id} className="row"><input type="checkbox" id={`set-src-${src.id}`} checked={prefs.sources[src.pref] !== false}
+              onChange={(e) => setPrefs({ sources: { ...prefs.sources, [src.pref]: e.target.checked } })} /> {src.label} <span className="faint" style={{ fontSize: 13 }}>{SOURCE_NOTES[src.id]}</span></label>
+          ))}
+          {!desktop && <p className="faint" style={{ margin: 0, fontSize: 13 }}>Some sites sometimes ask to check that a person is browsing. The desktop app can show you that check; a server can’t pass it.</p>}
         </section>
       )}
 
@@ -64,7 +75,17 @@ export function SettingsView() {
           </label>
           <label className="field"><span>Rig quality</span>
             <select id="set-rigq" value={prefs.rigQuality} onChange={(e) => setPrefs({ rigQuality: e.target.value as never })}>
-              <option value="standard">Standard</option><option value="eco">Eco: lighter variant of models that include one</option>
+              <option value="high">High: 4x oversampled drives</option><option value="standard">Standard</option><option value="eco">Eco: lighter variant of models that include one</option>
+            </select>
+          </label>
+          <label className="field"><span>Default view</span>
+            <select id="set-view" value={prefs.view} onChange={(e) => setPrefs({ view: e.target.value as never })}>
+              <option value="tab">Tab</option><option value="both">Tab and notation</option><option value="notation">Notation</option>
+            </select>
+          </label>
+          <label className="field"><span>Current bar highlight</span>
+            <select id="set-barhl" value={prefs.barHighlight} onChange={(e) => setPrefs({ barHighlight: e.target.value as never })}>
+              <option value="subtle">Subtle</option><option value="strong">Strong</option><option value="off">Off</option>
             </select>
           </label>
         </div>

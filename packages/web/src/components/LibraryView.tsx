@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Instrument, Playlist, SongRecord } from '@fretforge/shared';
-import { INSTRUMENT_LABELS } from '@fretforge/shared';
-import { api, type SongQuery } from '../api';
+import { GUITAR_TONES, INSTRUMENT_LABELS, STRING_FAMILIES, TUNING_CATALOG } from '@fretforge/shared';
+import { api, type Facet, type LibraryFacets, type SongQuery } from '../api';
 import { go, useApp, useDebounced } from '../lib/app';
 import { Icon, InstrumentIcon } from './icons';
 import { SongRow } from './SongRow';
@@ -73,7 +73,10 @@ export function LibraryView({ playlist, view }: { playlist?: string; view?: 'fav
   const [tuning, setTuning] = useState('');
   const [source, setSource] = useState('');
   const [withAudio, setWithAudio] = useState(false);
-  const [tunings, setTunings] = useState<{ name: string; count: number }[]>([]);
+  const [family, setFamily] = useState('');
+  const [body, setBody] = useState('');
+  const [tone, setTone] = useState('');
+  const [facets, setFacets] = useState<LibraryFacets>({ tunings: [], families: [], bodies: [], tones: [] });
   const [importing, setImporting] = useState(false);
   const [drag, setDrag] = useState(false);
   const [status, setStatus] = useState<Awaited<ReturnType<typeof api.libraryStatus>> | null>(null);
@@ -88,12 +91,13 @@ export function LibraryView({ playlist, view }: { playlist?: string; view?: 'fav
     const query: SongQuery = {
       q, instrument: prefs.instrument, sort: q || playlist ? undefined : sort, favorites: view === 'favorites', mine: view === 'mine',
       offline: view === 'offline', tuning: tuning || undefined, source: source || undefined, audio: withAudio, playlist,
+      family: family || undefined, body: body || undefined, tone: tone || undefined,
     };
     api.songs(query).then((r) => { setSongs(r.songs); setTotal(r.total); }).catch((e) => toast(e.message));
-  }, [q, prefs.instrument, sort, view, tuning, source, withAudio, playlist, toast]);
+  }, [q, prefs.instrument, sort, view, tuning, family, body, tone, source, withAudio, playlist, toast]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => { api.history().then((r) => setRecent(r.songs.slice(0, 6))).catch(() => {}); api.facets().then((r) => setTunings(r.tunings)).catch(() => {}); }, []);
+  useEffect(() => { api.history().then((r) => setRecent(r.songs.slice(0, 6))).catch(() => {}); api.facets().then(setFacets).catch(() => {}); }, []);
   useEffect(() => {
     let alive = true;
     const poll = () => api.libraryStatus().then((s) => {
@@ -147,7 +151,7 @@ export function LibraryView({ playlist, view }: { playlist?: string; view?: 'fav
   };
 
   const title = pl ? pl.name : view === 'favorites' ? 'Favorites' : view === 'mine' ? 'My tabs' : view === 'offline' ? 'Available offline' : 'Library';
-  const filtered = !!(tuning || source || withAudio);
+  const filtered = !!(tuning || family || body || tone || source || withAudio);
 
   return (
     <div className="page"
@@ -208,10 +212,10 @@ export function LibraryView({ playlist, view }: { playlist?: string; view?: 'fav
           <select id="library-sort" value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort" disabled={!!q || !!playlist}>
             {SORTS.map(([k, t]) => <option key={k} value={k}>{t}</option>)}
           </select>
-          <select id="library-tuning" value={tuning} onChange={(e) => setTuning(e.target.value)} aria-label="Tuning">
-            <option value="">Any tuning</option>
-            {tunings.map((t) => <option key={t.name} value={t.name}>{t.name} ({t.count})</option>)}
-          </select>
+        </div>
+        <div className="row filters" role="group" aria-label="Filters">
+          <TrackFilters facets={facets} family={family} tuning={tuning} body={body} tone={tone}
+            onChange={(f) => { if (f.family !== undefined) setFamily(f.family); if (f.tuning !== undefined) setTuning(f.tuning); if (f.body !== undefined) setBody(f.body); if (f.tone !== undefined) setTone(f.tone); }} />
           <select id="library-source" value={source} onChange={(e) => setSource(e.target.value)} aria-label="Source">
             {SOURCES.map(([k, t]) => <option key={k} value={k}>{t}</option>)}
           </select>
@@ -264,5 +268,53 @@ export function LibraryView({ playlist, view }: { playlist?: string; view?: 'fav
         )}
       </section>
     </div>
+  );
+}
+
+type FilterPatch = Partial<Record<'family' | 'tuning' | 'body' | 'tone', string>>;
+
+/** strings, tuning, guitar type and tone: every common tuning is listed, with how many songs use it */
+export function TrackFilters({ facets, family, tuning, body, tone, onChange }: { facets: LibraryFacets; family: string; tuning: string; body: string; tone: string; onChange: (p: FilterPatch) => void }) {
+  const count = (list: Facet[], name: string) => list.find((f) => f.name === name)?.count ?? 0;
+  const label = (name: string, n: number) => (n ? `${name} (${n})` : name);
+  const fams = family ? STRING_FAMILIES.filter((f) => f.id === family) : STRING_FAMILIES;
+  const tuningsFor = (fam: string) => {
+    const known = TUNING_CATALOG.filter((t) => t.family === fam).map((t) => t.name);
+    const extra = facets.tunings.filter((t) => t.family === fam && !known.includes(t.name)).map((t) => t.name);
+    return [...known, ...extra];
+  };
+  return (
+    <>
+      <select id="library-strings" value={family} aria-label="Strings" onChange={(e) => {
+        const f = e.target.value;
+        // keep the tuning only if it belongs to the new string count
+        onChange({ family: f, tuning: f && tuning && !tuningsFor(f).includes(tuning) ? '' : tuning });
+      }}>
+        <option value="">Any strings</option>
+        <optgroup label="Guitar">{STRING_FAMILIES.filter((f) => f.instrument === 'guitar').map((f) => <option key={f.id} value={f.id}>{label(f.label, count(facets.families, f.id))}</option>)}</optgroup>
+        <optgroup label="Bass">{STRING_FAMILIES.filter((f) => f.instrument === 'bass').map((f) => <option key={f.id} value={f.id}>{label(f.label, count(facets.families, f.id))}</option>)}</optgroup>
+      </select>
+      <select id="library-tuning" value={tuning} onChange={(e) => onChange({ tuning: e.target.value })} aria-label="Tuning">
+        <option value="">Any tuning</option>
+        {fams.map((f) => (
+          <optgroup key={f.id} label={f.label}>
+            {tuningsFor(f.id).map((name) => <option key={name} value={name}>{label(name, count(facets.tunings, name))}</option>)}
+          </optgroup>
+        ))}
+        {!family && facets.tunings.some((t) => !t.family) && (
+          <optgroup label="Other">{facets.tunings.filter((t) => !t.family).map((t) => <option key={t.name} value={t.name}>{label(t.name, t.count)}</option>)}</optgroup>
+        )}
+      </select>
+      <select id="library-body" value={body} onChange={(e) => onChange({ body: e.target.value })} aria-label="Guitar type">
+        <option value="">Any guitar</option>
+        <option value="electric">{label('Electric', count(facets.bodies, 'electric'))}</option>
+        <option value="acoustic">{label('Acoustic', count(facets.bodies, 'acoustic'))}</option>
+        <option value="classical">{label('Classical (nylon)', count(facets.bodies, 'classical'))}</option>
+      </select>
+      <select id="library-tone" value={tone} onChange={(e) => onChange({ tone: e.target.value })} aria-label="Tone">
+        <option value="">Any tone</option>
+        {GUITAR_TONES.map((t) => <option key={t.id} value={t.id}>{label(t.label, count(facets.tones, t.id))}</option>)}
+      </select>
+    </>
   );
 }

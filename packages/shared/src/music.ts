@@ -1,3 +1,4 @@
+import { FAMILY_PREFIX, OTHER_TUNINGS, STRING_FAMILIES, TUNING_CATALOG } from './tunings';
 import type { Instrument } from './types';
 
 export const SHARP_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -20,38 +21,9 @@ export function frequencyToMidi(freq: number, a4 = 440): number {
   return 69 + 12 * Math.log2(freq / a4);
 }
 
-/** Known tunings, highest string first (alphaTab order). */
-const TUNINGS: { name: string; notes: number[] }[] = [
-  { name: 'Standard', notes: [64, 59, 55, 50, 45, 40] },
-  { name: 'Drop D', notes: [64, 59, 55, 50, 45, 38] },
-  { name: 'Eb Standard', notes: [63, 58, 54, 49, 44, 39] },
-  { name: 'Drop C#', notes: [63, 58, 54, 49, 44, 37] },
-  { name: 'D Standard', notes: [62, 57, 53, 48, 43, 38] },
-  { name: 'Drop C', notes: [62, 57, 53, 48, 43, 36] },
-  { name: 'C# Standard', notes: [61, 56, 52, 47, 42, 37] },
-  { name: 'Drop B', notes: [61, 56, 52, 47, 42, 35] },
-  { name: 'C Standard', notes: [60, 55, 51, 46, 41, 36] },
-  { name: 'Drop A#', notes: [60, 55, 51, 46, 41, 34] },
-  { name: 'B Standard', notes: [59, 54, 50, 45, 40, 35] },
-  { name: 'Drop A', notes: [59, 54, 50, 45, 40, 33] },
-  { name: 'Open G', notes: [62, 59, 55, 50, 43, 38] },
-  { name: 'Open D', notes: [62, 57, 54, 50, 45, 38] },
-  { name: 'Open E', notes: [64, 59, 56, 52, 47, 40] },
-  { name: 'Open C', notes: [64, 60, 55, 48, 43, 36] },
-  { name: 'DADGAD', notes: [62, 57, 55, 50, 45, 38] },
-  { name: '7-string Standard', notes: [64, 59, 55, 50, 45, 40, 35] },
-  { name: '7-string Drop A', notes: [64, 59, 55, 50, 45, 40, 33] },
-  { name: '8-string Standard', notes: [64, 59, 55, 50, 45, 40, 35, 30] },
-  { name: '8-string Drop E', notes: [64, 59, 55, 50, 45, 40, 35, 28] },
-  { name: 'Bass Standard', notes: [43, 38, 33, 28] },
-  { name: 'Bass Drop D', notes: [43, 38, 33, 26] },
-  { name: 'Bass Eb Standard', notes: [42, 37, 32, 27] },
-  { name: 'Bass D Standard', notes: [41, 36, 31, 26] },
-  { name: 'Bass Drop C', notes: [41, 36, 31, 24] },
-  { name: '5-string Bass', notes: [43, 38, 33, 28, 23] },
-  { name: '6-string Bass', notes: [48, 43, 38, 33, 28, 23] },
-  { name: 'Ukulele', notes: [69, 64, 60, 67] },
-];
+const TUNINGS = [...TUNING_CATALOG, ...OTHER_TUNINGS];
+/** the standard tuning of each family is its first entry */
+const BASES = STRING_FAMILIES.map((f) => TUNING_CATALOG.find((x) => x.family === f.id)!);
 
 /** Name a tuning given MIDI notes, highest string first. */
 export function tuningName(notes: number[]): string | null {
@@ -59,14 +31,12 @@ export function tuningName(notes: number[]): string | null {
   for (const t of TUNINGS) {
     if (t.notes.length === notes.length && t.notes.every((n, i) => n === notes[i])) return t.name;
   }
-  // Uniformly shifted standard tuning
-  for (const t of TUNINGS) {
-    if (t.notes.length !== notes.length || !t.name.includes('Standard')) continue;
+  // uniformly shifted standard tuning: "F# Standard", "7-string C Standard"…
+  for (const t of BASES) {
+    if (t.notes.length !== notes.length) continue;
     const d = notes[0] - t.notes[0];
     if (d !== 0 && Math.abs(d) <= 7 && t.notes.every((n, i) => n + d === notes[i])) {
-      const root = noteName(t.notes[t.notes.length - 1] + d, true);
-      const prefix = t.name.replace('Standard', '').trim();
-      return `${prefix ? prefix + ' ' : ''}${root} Standard`;
+      return `${FAMILY_PREFIX[t.family]}${noteName(t.notes[t.notes.length - 1] + d, true)} Standard`;
     }
   }
   return notes.slice().reverse().map((n) => noteName(n)).join(' ');

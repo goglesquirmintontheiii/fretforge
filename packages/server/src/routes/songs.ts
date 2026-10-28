@@ -6,8 +6,13 @@ import type { Ctx } from '../app';
 import { httpError, requireRole } from '../auth';
 import { newId } from '../store';
 import type { ListQuery } from '../library';
-import { fetchSongsterr, searchSongsterr } from '../providers/songsterr';
+import { fetchSongsterr, fetchSongsterrVideos, searchSongsterr } from '../providers/songsterr';
 import { fetchUltimateGuitar, searchUltimateGuitar } from '../providers/ultimateGuitar';
+import { fetchGuitarTabs, searchGuitarTabs } from '../providers/guitartabs';
+import { searchGuitarCh, searchGuitarPro } from '../providers/catalogs';
+import { BrowserCheckError } from '../providers/http';
+import { addSongsterrVideos } from '../videos';
+import { guitarBody, guitarTone, stringFamily, type GuitarBody, type GuitarTone, type StringFamily } from '@fretforge/shared';
 
 const uid = (req: FastifyRequest) => req.user!.id;
 
@@ -33,7 +38,8 @@ export function registerSongs(app: FastifyInstance, ctx: Ctx) {
     const query: ListQuery = {
       userId: uid(req), q: q.q, instrument: (q.instrument as Instrument) || 'all', sort: q.sort as ListQuery['sort'],
       favorites: q.favorites === '1', limit: q.limit ? Number(q.limit) : undefined,
-      tuning: q.tuning || undefined, source: q.source || undefined, withAudio: q.audio === '1', ids: pl?.songIds,
+      tuning: q.tuning || undefined, source: q.source || undefined,
+      family: (q.family as StringFamily) || undefined, body: (q.body as GuitarBody) || undefined, tone: (q.tone as GuitarTone) || undefined, withAudio: q.audio === '1', ids: pl?.songIds,
       mine: q.mine === '1', offline: q.offline === '1',
     };
     const songs = library.list(query);
@@ -41,9 +47,18 @@ export function registerSongs(app: FastifyInstance, ctx: Ctx) {
   });
 
   app.get('/api/library/facets', async () => {
-    const tunings = new Map<string, number>();
-    for (const s of store.songs()) for (const t of new Set(s.tracks.map((x) => x.tuningName).filter(Boolean) as string[])) tunings.set(t, (tunings.get(t) ?? 0) + 1);
-    return { tunings: [...tunings.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count })) };
+    const tunings = new Map<string, number>(), families = new Map<string, number>(), bodies = new Map<string, number>(), tones = new Map<string, number>();
+    const famOf = new Map<string, string>();
+    const bump = (m: Map<string, number>, keys: (string | null)[]) => { for (const k of new Set(keys.filter(Boolean) as string[])) m.set(k, (m.get(k) ?? 0) + 1); };
+    for (const s of store.songs()) {
+      bump(tunings, s.tracks.map((x) => x.tuningName));
+      bump(families, s.tracks.map(stringFamily));
+      bump(bodies, s.tracks.map(guitarBody));
+      bump(tones, s.tracks.map(guitarTone));
+      for (const t of s.tracks) { const f = stringFamily(t); if (f && t.tuningName && !famOf.has(t.tuningName)) famOf.set(t.tuningName, f); }
+    }
+    const list = (m: Map<string, number>) => [...m.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }));
+    return { tunings: list(tunings).map((t) => ({ ...t, family: famOf.get(t.name) ?? null })), families: list(families), bodies: list(bodies), tones: list(tones) };
   });
 
   app.get('/api/songs/:id', async (req) => store.songFor(uid(req), getSong((req.params as { id: string }).id)));
@@ -298,25 +313,53 @@ export function registerSongs(app: FastifyInstance, ctx: Ctx) {
 
   // ------------------------------------------------------------ online sources
   const cache = new Map<string, { at: number; value: OnlineResult[] }>();
+  const checkBlocked = new Map<string, number>();
   const markSaved = (rs: OnlineResult[]) => rs.map((r) => ({ ...r, savedId: store.findBySource(r.source, r.ref)?.id }));
+
+  const SITES: Record<string, string> = { 'ultimate-guitar': 'https://www.ultimate-guitar.com/', songsterr: 'https://www.songsterr.com/', guitartabs: 'https://www.guitartabs.cc/', 'guitar-pro': 'https://www.guitar-pro.com/tabs', 'guitar-ch': 'https://www.guitar.ch/en-us/guitar/tab/tab.html' };
+  const enabled = (source: OnlineResult['source']) => {
+    const s = store.prefs().sources;
+    return source === 'songsterr' ? s.songsterr : source === 'ultimate-guitar' ? s.ultimateGuitar : source === 'guitartabs' ? s.guitartabs !== false
+      : source === 'guitar-pro' ? s.guitarPro !== false : source === 'guitar-ch' ? s.guitarCh !== false : false;
+  };
 
   app.get('/api/online/search', async (req): Promise<OnlineSearchResponse> => {
     const { source, q } = req.query as { source: OnlineResult['source']; q?: string };
     const text = (q ?? '').trim();
-    if (!text) return { source, results: [] };
-    const prefs = store.prefs();
-    if ((source === 'songsterr' && !prefs.sources.songsterr) || (source === 'ultimate-guitar' && !prefs.sources.ultimateGuitar)) return { source, results: [] };
+    if (!text || !enabled(source)) return { source, results: [] };
     const key = `${source}:${text.toLowerCase()}`;
     const hit = cache.get(key);
     if (hit && Date.now() - hit.at < 10 * 60_000) return { source, results: markSaved(hit.value) };
+    // after a failed browser check, don't hammer the site on every keystroke
+    const blocked = checkBlocked.get(source);
+    if (blocked && Date.now() - blocked < 2 * 60_000) return { source, results: [], error: 'Waiting for the browser check.', browserCheck: true };
     try {
-      const results = source === 'songsterr' ? await searchSongsterr(providers, text) : source === 'ultimate-guitar' ? await searchUltimateGuitar(providers, text) : [];
+      const results = source === 'songsterr' ? await searchSongsterr(providers, text)
+        : source === 'ultimate-guitar' ? await searchUltimateGuitar(providers, text)
+          : source === 'guitartabs' ? await searchGuitarTabs(providers, text)
+            : source === 'guitar-pro' ? await searchGuitarPro(providers, text)
+              : source === 'guitar-ch' ? await searchGuitarCh(providers, text) : [];
       cache.set(key, { at: Date.now(), value: results });
       if (cache.size > 200) cache.delete(cache.keys().next().value!);
       return { source, results: markSaved(results) };
     } catch (e) {
+      if (e instanceof BrowserCheckError) {
+        checkBlocked.set(source, Date.now());
+        return { source, results: [], error: providers.verify ? `${e.message} Complete it once and searches work again.` : `${e.message} This server can’t pass it; search from the desktop app, or open the tab on the site.`, browserCheck: !!providers.verify };
+      }
       return { source, results: [], error: e instanceof Error ? e.message : String(e) };
     }
+  });
+
+  // desktop: show the site so the user can complete its browser check
+  app.post('/api/online/verify', async (req) => {
+    const { source } = (req.body ?? {}) as { source?: OnlineResult['source'] };
+    if (!source || !SITES[source]) throw httpError(400, 'Unknown source.');
+    if (!providers.verify) throw httpError(400, 'Only the desktop app can show the site’s browser check.');
+    await providers.verify(SITES[source]);
+    checkBlocked.delete(source);
+    for (const k of [...cache.keys()]) if (k.startsWith(`${source}:`)) cache.delete(k);
+    return { ok: true };
   });
 
   app.post('/api/online/open', async (req) => {
@@ -330,14 +373,24 @@ export function registerSongs(app: FastifyInstance, ctx: Ctx) {
       const r = await fetchSongsterr(providers, ref);
       rec = library.importScore({
         score: r.score, title: r.meta.title, artist: r.meta.artist, warnings: r.warnings,
-        source: { kind: 'songsterr', ref, url: r.url, variant: 'Songsterr' },
+        source: { kind: 'songsterr', ref, url: r.url, variant: 'Songsterr', revision: r.meta.revisionId },
       });
+      // the YouTube videos Songsterr syncs with this tab (fails soft)
+      addSongsterrVideos(store, rec.id, await fetchSongsterrVideos(providers, r.meta.songId, r.meta.revisionId));
     } else if (source === 'ultimate-guitar') {
       const r = await fetchUltimateGuitar(providers, ref);
       rec = library.importText({
         tab: r.tab, title: r.title, artist: r.artist, instruments: r.instruments,
         source: { kind: 'ultimate-guitar', ref, url: r.url, variant: r.type, rating: r.rating, votes: r.votes },
       });
+    } else if (source === 'guitartabs') {
+      const r = await fetchGuitarTabs(providers, ref);
+      rec = library.importText({
+        tab: r.tab, title: r.title, artist: r.artist, instruments: r.instruments,
+        source: { kind: 'guitartabs', ref, url: r.url, variant: r.type },
+      });
+    } else if (source === 'guitar-pro' || source === 'guitar-ch') {
+      throw httpError(400, 'This catalog only opens on its own site.');
     } else throw httpError(400, 'Unknown source.');
     return store.songFor(uid(req), rec);
   });

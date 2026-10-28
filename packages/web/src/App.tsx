@@ -4,6 +4,7 @@ import { api } from './api';
 import { AppProvider, go, parseRoute, useApp, useRoute } from './lib/app';
 import { LiveRigProvider } from './rig/LiveRig';
 import { TopBar } from './components/TopBar';
+import { AppMenu, SearchOverlay } from './components/AppMenu';
 import { LibraryView } from './components/LibraryView';
 import { SearchView } from './components/SearchView';
 import { SettingsView } from './components/SettingsView';
@@ -53,6 +54,8 @@ function Shell() {
   return (
     <div className="shell">
       <TopBar route={route} />
+      <AppMenu route={route} />
+      <SearchOverlay />
       <main className="main" id="main">
         <Suspense fallback={<div className="page"><div className="empty"><span className="spinner" /></div></div>}>
           {route.name === 'library' && <LibraryView playlist={route.playlist} view={route.view} />}

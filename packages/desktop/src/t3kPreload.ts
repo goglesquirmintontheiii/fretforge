@@ -1,3 +1,4 @@
+/// <reference lib="dom" />
 // Runs inside the embedded tone3000.com page (isolated world). Adds an "Add to Fretforge"
 // button next to every download control; clicking it arms the next download so the main
 // process puts the file in the rig library, then presses the site's own button.

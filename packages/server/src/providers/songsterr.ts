@@ -134,3 +134,45 @@ export async function fetchSongsterr(ctx: ProviderContext, ref: string): Promise
   if (missing) warnings.unshift(`${missing} track${missing === 1 ? '' : 's'} couldn’t be downloaded`);
   return { score, meta, warnings, url: songsterrUrl(songId, meta.artist, meta.title) };
 }
+
+export interface SongsterrVideo { videoId: string; points: number[]; feature: string | null }
+
+/**
+ * The YouTube videos Songsterr syncs with a tab, with the time each played bar starts.
+ * Fails soft: a song without videos (or a site change) gives an empty list.
+ */
+export async function fetchSongsterrVideos(ctx: ProviderContext, songId: number, revisionId: number): Promise<SongsterrVideo[]> {
+  try {
+    const raw = await getJson<unknown>(ctx, `${SITE}/api/video-points/${songId}/${revisionId}/list`, `${SITE}/`);
+    return parseSongsterrVideos(raw);
+  } catch {
+    return [];
+  }
+}
+
+export function parseSongsterrVideos(raw: unknown): SongsterrVideo[] {
+  const list = Array.isArray(raw) ? raw : Array.isArray((raw as { videos?: unknown[] })?.videos) ? (raw as { videos: unknown[] }).videos : [];
+  const out: SongsterrVideo[] = [];
+  const seen = new Set<string>();
+  for (const v of list as { videoId?: unknown; points?: unknown; feature?: unknown; status?: unknown }[]) {
+    const id = typeof v?.videoId === 'string' ? v.videoId : '';
+    if (!/^[\w-]{11}$/.test(id) || seen.has(id)) continue;
+    if (v.status && v.status !== 'done') continue;
+    const points = Array.isArray(v.points) ? v.points.map(Number).filter((n) => Number.isFinite(n) && n >= 0) : [];
+    if (points.length < 2) continue;
+    seen.add(id);
+    out.push({ videoId: id, points, feature: typeof v.feature === 'string' ? v.feature : null });
+  }
+  // the full song first, then backing tracks, solos, playthroughs
+  const rank = (f: string | null) => (f === null ? 0 : /backing/i.test(f) ? 1 : 2);
+  return out.sort((a, b) => rank(a.feature) - rank(b.feature));
+}
+
+export async function fetchSongsterrRevision(ctx: ProviderContext, songId: number): Promise<number> {
+  return (await fetchMeta(ctx, songId)).revisionId;
+}
+
+export const songsterrIds = (ref: string): number | null => {
+  const m = /s(\d+)(?:$|[/?#])/.exec(ref) || /^(\d+)$/.exec(ref.trim());
+  return m ? Number(m[1]) : null;
+};

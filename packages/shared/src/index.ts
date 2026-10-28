@@ -7,3 +7,4 @@ export * from './wav';
 export * from './rigBlocks';
 export * from './rig';
 export * from './namTags';
+export * from './tunings';

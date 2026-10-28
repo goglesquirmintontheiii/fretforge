@@ -69,3 +69,35 @@ describe('chord spelling and shapes', async () => {
     expect(shapes('Eb5')[0].frets).toEqual([-1, 6, 8, 8, -1, -1]);
   });
 });
+
+import { guitarBody, guitarTone, stringFamily, TUNING_CATALOG, STRING_FAMILIES } from '../src/tunings';
+import { tuningName as nameTuning } from '../src/music';
+
+describe('tuning catalog', () => {
+  it('has tunings for every string count with unique names', () => {
+    for (const f of STRING_FAMILIES) expect(TUNING_CATALOG.some((t) => t.family === f.id && t.notes.length === f.strings)).toBe(true);
+    for (const t of TUNING_CATALOG) {
+      const f = STRING_FAMILIES.find((x) => x.id === t.family)!;
+      expect(t.notes.length).toBe(f.strings);
+    }
+    expect(new Set(TUNING_CATALOG.map((t) => t.name)).size).toBe(TUNING_CATALOG.length);
+  });
+  it('names tunings, including shifted standards', () => {
+    expect(nameTuning([62, 57, 53, 48, 43, 38, 33])).toBe('7-string A Standard');
+    expect(nameTuning([66, 61, 57, 52, 47, 42])).toBe('F# Standard'.replace('F#', 'Gb'));
+    expect(nameTuning([60, 55, 51, 46, 41, 36, 31, 26])).toBe('8-string D Standard');
+    expect(nameTuning([64, 64, 59, 59, 67, 55, 62, 50, 57, 45, 52, 40])).toBe('12-string Standard');
+    expect(nameTuning([48, 43, 38, 33, 28])).toBe('5-string Bass High C');
+  });
+  it('classifies tracks', () => {
+    const t = (o: object) => ({ instrument: 'guitar' as const, strings: 6, name: '', program: 29, ...o });
+    expect(stringFamily(t({ strings: 7 }))).toBe('guitar7');
+    expect(stringFamily(t({ name: '12-String Acoustic' }))).toBe('guitar12');
+    expect(stringFamily(t({ instrument: 'bass', strings: 5 }))).toBe('bass5');
+    expect(guitarTone(t({}))).toBe('overdrive');
+    expect(guitarTone(t({ program: 27 }))).toBe('clean');
+    expect(guitarTone(t({ name: 'Lead (dist)', program: 27 }))).toBe('distortion');
+    expect(guitarBody(t({ program: 25 }))).toBe('acoustic');
+    expect(guitarBody(t({ program: 30 }))).toBe('electric');
+  });
+});
