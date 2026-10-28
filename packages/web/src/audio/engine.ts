@@ -1,9 +1,9 @@
-// Main-thread side of the audio engine: one AudioContext, the mixer worklet, the amp worker
-// pool and caches for rig files and renders.
-import type { AmpSettings, RigFile } from '@fretforge/shared';
+// Main-thread side of the audio engine: one AudioContext, the mixer worklet, the rig worker
+// pool and caches for rig files.
+import { BLOCK_BY_TYPE, blockState, compileRig, rigBlocks, type AmpSettings, type RigDoc, type RigFile } from '@fretforge/shared';
 import mixerUrl from './mixer.worklet.ts?worker&url';
-import AmpWorker from './ampWorker.ts?worker';
-import type { AmpJob, AmpReply } from './ampWorker';
+import RigWorker from './ampWorker.ts?worker';
+import type { RigJob, RigReply } from './ampWorker';
 
 export const ENGINE_RATE = 48000;
 
@@ -63,34 +63,38 @@ export function rigFileBytes(id: string): Promise<ArrayBuffer> {
   return p;
 }
 
-// ------------------------------------------------------------------ amp worker pool
-class AmpPool {
-  private workers: { w: Worker; busy: boolean; wasmSent: boolean }[] = [];
-  private queue: { job: AmpJob; resolve: (r: AmpReply) => void }[] = [];
+// ------------------------------------------------------------------ rig worker pool
+class RigPool {
+  private workers: { w: Worker; busy: boolean; wasmSent: boolean; has: Set<string> }[] = [];
+  private queue: { job: Omit<RigJob, 'id' | 'wasm'>; data: RigData; resolve: (r: RigReply) => void }[] = [];
   private nextId = 1;
-  private waiting = new Map<number, (r: AmpReply) => void>();
+  private waiting = new Map<number, { resolve: (r: RigReply) => void; item: RigPool['queue'][number]; slot: RigPool['workers'][number] }>();
   readonly size = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+  constructor(private wasm: ArrayBuffer) {}
 
   private ensure() {
     while (this.workers.length < this.size) {
-      const w = new AmpWorker();
-      const slot = { w, busy: false, wasmSent: false };
-      w.onmessage = (e: MessageEvent<AmpReply>) => {
-        const cb = this.waiting.get(e.data.id);
+      const w = new RigWorker();
+      const slot = { w, busy: false, wasmSent: false, has: new Set<string>() };
+      w.onmessage = (e: MessageEvent<RigReply>) => {
+        const wt = this.waiting.get(e.data.id);
         this.waiting.delete(e.data.id);
         slot.busy = false;
-        cb?.(e.data);
+        if (wt && 'missing' in e.data) {
+          // the worker dropped something from its cache: send everything again
+          slot.has.clear();
+          this.queue.unshift(wt.item);
+        } else wt?.resolve(e.data);
         this.pump();
       };
       this.workers.push(slot);
     }
   }
 
-  run(job: Omit<AmpJob, 'id' | 'wasm'>, wasm: ArrayBuffer, transfer: Transferable[]): Promise<AmpReply> {
+  run(job: Omit<RigJob, 'id' | 'wasm'>, data: RigData): Promise<RigReply> {
     this.ensure();
     return new Promise((resolve) => {
-      this.queue.push({ job: { ...job, id: this.nextId++, wasm }, resolve });
-      (this.queue[this.queue.length - 1] as unknown as { transfer: Transferable[] }).transfer = transfer;
+      this.queue.push({ job, data, resolve });
       this.pump();
     });
   }
@@ -100,75 +104,153 @@ class AmpPool {
       if (slot.busy || !this.queue.length) continue;
       const item = this.queue.shift()!;
       slot.busy = true;
-      this.waiting.set(item.job.id, item.resolve);
-      const job = { ...item.job, wasm: slot.wasmSent ? undefined : item.job.wasm };
+      const id = this.nextId++;
+      this.waiting.set(id, { resolve: item.resolve, item, slot });
+      const job: RigJob = {
+        ...item.job, id, wasm: slot.wasmSent ? undefined : this.wasm,
+        nams: item.job.nams.map((n) => (slot.has.has(n.key) ? n : { ...n, text: item.data.texts.get(n.key) })),
+        irs: item.job.irs.map((r) => (slot.has.has(r.key) ? r : { ...r, bytes: item.data.bytes.get(r.key)?.slice(0) })),
+        input: item.job.input.slice(0),
+      };
+      for (const n of item.job.nams) slot.has.add(n.key);
+      for (const r of item.job.irs) slot.has.add(r.key);
       slot.wasmSent = true;
-      slot.w.postMessage(job, (item as unknown as { transfer: Transferable[] }).transfer ?? []);
+      slot.w.postMessage(job, [job.input.buffer, ...job.irs.map((r) => r.bytes).filter((b): b is ArrayBuffer => !!b)]);
     }
   }
 
   cancelAll() {
-    for (const q of this.queue) q.resolve({ id: q.job.id, error: 'cancelled' });
+    for (const q of this.queue) q.resolve({ id: 0, error: 'cancelled' });
     this.queue = [];
   }
 }
 
-let pool: AmpPool | null = null;
-const ampPool = () => (pool ??= new AmpPool());
+interface RigData { texts: Map<string, string>; bytes: Map<string, ArrayBuffer> }
 
-/** True when the amp would change the sound at all. */
+let pool: RigPool | null = null;
+async function rigPool(): Promise<RigPool> {
+  pool ??= new RigPool(await engineWasm());
+  return pool;
+}
+
+/** 0 eco (no oversampling, lightest model variants), 1 standard, 2 high */
+export let rigQualityLevel = 1;
+export function setRigQuality(q: 'eco' | 'standard' | 'high') { rigQualityLevel = q === 'eco' ? 0 : q === 'high' ? 2 : 1; rigLite = q === 'eco'; }
+
+/** True when a 0.4 track amp would change the sound at all. */
 export function ampActive(a: AmpSettings | undefined): a is AmpSettings {
   return !!a && a.enabled && (!!a.namId || !!a.irId || !!a.bassDb || !!a.midDb || !!a.trebleDb || !!a.lowCutHz || !!a.highCutHz || a.gate || !!a.outputDb || !!a.inputDb);
 }
 
-export function ampKey(a: AmpSettings): string {
-  return JSON.stringify([rigLite, a.namId, a.irId, a.inputDb, a.outputDb, a.gate, a.gateDb, a.bassDb, a.midDb, a.trebleDb, a.lowCutHz, a.highCutHz, a.irMix]);
+/** a stretch of a track that plays through one rig and snapshot (sample positions) */
+export interface RigSegment { rig: RigDoc; snapshot: number; start: number; end: number }
+
+/** true when a rig changes the sound at all */
+export function rigActive(rig: RigDoc | null | undefined): rig is RigDoc {
+  return !!rig && (rigBlocks(rig).some((b) => b.enabled) || rig.inputDb !== 0 || rig.outputDb !== 0);
 }
+
+export function rigKey(rig: RigDoc, snapshot: number): string {
+  return JSON.stringify([rigQualityLevel, rig.id, rig.updatedAt, snapshot, rig.inputDb, rig.outputDb, Array.from(compileRig(rig, snapshot, { offline: true }).desc), rigBlocks(rig).map((b) => [b.nam, b.ir])]);
+}
+
+const hasTimeBased = (rig: RigDoc, snapshot: number) => {
+  const snap = rig.snapshots[snapshot];
+  return rigBlocks(rig).some((b) => BLOCK_BY_TYPE.get(b.type)?.timeBased && (blockState(b, snap).enabled || b.trails));
+};
 
 /**
- * Runs a dry track render through the amp chain in parallel chunks. Chunks overlap by the
- * model's warm-up and the IR length, so the result matches one continuous pass.
+ * Runs a dry track render through its rigs: each segment in parallel chunks (chunks overlap by
+ * a warm-up so the result matches one continuous pass), segments crossfaded, tails of
+ * delays and reverbs ringing into the next segment.
  */
-export async function processAmp(dry: Float32Array, amp: AmpSettings, sampleRate: number, onProgress: (f: number) => void, signal?: AbortSignal): Promise<Float32Array> {
-  const wasm = await engineWasm();
-  const namText = amp.namId ? await rigFileText(amp.namId) : undefined;
-  const irBytes = amp.irId ? await rigFileBytes(amp.irId) : undefined;
+export async function processRigTrack(dry: Float32Array, segments: RigSegment[], sampleRate: number, tempo: number, onProgress: (f: number) => void, signal?: AbortSignal): Promise<{ L: Float32Array; R: Float32Array | null }> {
+  const p = await rigPool();
+  const quality = rigQualityLevel, lite = quality === 0;
+  // compile each rig/snapshot once and gather its files
+  const compiled = segments.map((s) => compileRig(s.rig, s.snapshot, { offline: true }));
+  const data: RigData = { texts: new Map(), bytes: new Map() };
+  for (const c of compiled) {
+    for (const n of c.nams) if (!data.texts.has(n.fileId)) data.texts.set(n.fileId, await rigFileText(n.fileId));
+    for (const r of c.irs) if (!data.bytes.has(r.fileId)) data.bytes.set(r.fileId, await rigFileBytes(r.fileId));
+  }
   if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
-  // the synth renders quietly; bring it to a DI-like level (peak around -6 dBFS) before the amp
   let peak = 0;
   for (let i = 0; i < dry.length; i++) { const v = Math.abs(dry[i]); if (v > peak) peak = v; }
+  // the synth renders quietly; bring it to a DI-like level (peak around -6 dBFS) before the rig
   const norm = peak > 1e-5 ? 0.5 / peak : 1;
-  const p = ampPool();
-  const pre = Math.round(sampleRate * 0.5) + (irBytes ? sampleRate : 0);
-  const chunks = Math.max(1, Math.min(p.size * 3, Math.ceil(dry.length / (sampleRate * 20))));
-  const size = Math.ceil(dry.length / chunks);
-  const out = new Float32Array(dry.length);
+  const fade = Math.round(sampleRate * 0.01);
+  let maxTail = 0;
+  const plans = segments.map((s, si) => {
+    const c = compiled[si];
+    const timeBased = hasTimeBased(s.rig, s.snapshot);
+    const pre = Math.round(sampleRate * (0.5 + (c.irs.length ? 1 : 0) + (timeBased ? 6 : 0)));
+    const tail = Math.round(sampleRate * (timeBased ? 6 : 0.05));
+    maxTail = Math.max(maxTail, tail);
+    return { s, si, c, pre, tail };
+  });
+  const totalLen = dry.length + maxTail;
+  const outL = new Float32Array(totalLen);
+  let outR: Float32Array | null = null;
+  const units = plans.reduce((n, pl) => n + Math.max(1, Math.ceil((pl.s.end - pl.s.start) / (sampleRate * 20))), 0);
   let done = 0;
-  await Promise.all(Array.from({ length: chunks }, async (_, c) => {
-    const start = c * size, end = Math.min(dry.length, start + size);
-    if (end <= start) return;
-    const from = Math.max(0, start - pre);
-    const input = new Float32Array(end - from);
-    for (let i = 0; i < input.length; i++) input[i] = dry[from + i] * norm;
-    const r = await p.run({
-      sampleRate, amp: { ...amp, outputDb: 0 }, namKey: amp.namId ? `${amp.namId}${rigLite ? ':lite' : ''}` : null, namText, lite: rigLite, irKey: amp.irId ?? null, irBytes: irBytes ? irBytes.slice(0) : undefined,
-      input, pre: start - from,
-    }, wasm, [input.buffer]);
-    if (signal?.aborted) return;
-    if ('error' in r) throw new Error(r.error === 'cancelled' ? 'cancelled' : `The amp could not process this track: ${r.error}`);
-    if ('output' in r) out.set(r.output, start);
-    onProgress(++done / chunks);
+  await Promise.all(plans.map(async (pl) => {
+    const { s, si, c, pre, tail } = pl;
+    const a = s.start, b = Math.min(s.end, dry.length);
+    if (b <= a) return;
+    const last = si === segments.length - 1;
+    const chunks = Math.max(1, Math.ceil((b - a) / (sampleRate * 20)));
+    const size = Math.ceil((b - a) / chunks);
+    const inGain = norm * Math.pow(10, s.rig.inputDb / 20);
+    const results = await Promise.all(Array.from({ length: chunks }, async (_, k) => {
+      const ca = a + k * size, cb = Math.min(b, ca + size);
+      const isLastChunk = cb === b;
+      const from = Math.max(0, ca - pre);
+      const to = isLastChunk ? Math.min(totalLen, b + tail) : cb;
+      const input = new Float32Array(to - from);
+      const dryEnd = isLastChunk ? (last ? dry.length : Math.min(dry.length, b + fade)) : cb;
+      for (let i = from; i < Math.min(dryEnd, to); i++) {
+        let v = dry[i];
+        // the outgoing rig hears the input fade out after its segment, then rings out
+        if (isLastChunk && !last && i >= b) v *= 1 - (i - b) / fade;
+        input[i - from] = v;
+      }
+      const r = await p.run({
+        sampleRate, desc: c.desc, quality, tempo, inputGain: inGain, input, pre: ca - from,
+        nams: c.nams.map((n) => ({ block: n.block, key: n.fileId + (lite ? ':lite' : ''), lite })),
+        irs: c.irs.map((x) => ({ block: x.block, slot: x.slot, key: x.fileId })),
+      }, data);
+      if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+      if ('error' in r) throw new Error(r.error === 'cancelled' ? 'cancelled' : `The rig could not process this track: ${r.error}`);
+      if (!('L' in r)) throw new Error('The rig worker failed.');
+      onProgress(++done / units);
+      return { ca, cb, L: r.L, R: r.R };
+    }));
+    // match this rig's loudness to the dry track in its segment, then apply the rig's output level
+    let ed = 0, ew = 0;
+    for (const res of results) {
+      for (let i = res.ca; i < res.cb; i += 4) {
+        const d = dry[i] * norm, w = res.L[i - res.ca], w2 = res.R ? res.R[i - res.ca] : w;
+        ed += d * d; ew += 0.5 * (w * w + w2 * w2);
+      }
+    }
+    const g = (ew > 1e-12 && ed > 1e-12 ? Math.sqrt(ed / ew) / norm : 1) * Math.pow(10, s.rig.outputDb / 20);
+    for (const res of results) {
+      if (res.R && !outR) outR = outL.slice(0);
+      for (let i = 0; i < res.L.length; i++) {
+        const at = res.ca + i;
+        if (at >= totalLen) break;
+        const f = si > 0 && at - a < fade ? (at - a) / fade : 1;
+        outL[at] += res.L[i] * g * f;
+        if (outR) outR[at] += (res.R ? res.R[i] : res.L[i]) * g * f;
+      }
+    }
   }));
   if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
-  // level-match to the dry track so switching an amp on doesn't jump in volume; Output then trims it
-  const rms = (x: Float32Array) => { let e = 0; for (let i = 0; i < x.length; i += 4) e += x[i] * x[i]; return Math.sqrt(e / Math.max(1, x.length / 4)); };
-  const rd = rms(dry), rw = rms(out);
-  const g = (rw > 1e-7 && rd > 1e-7 ? rd / rw : 1) * Math.pow(10, amp.outputDb / 20);
-  for (let i = 0; i < out.length; i++) out[i] *= g;
-  return out;
+  return { L: outL, R: outR };
 }
 
-export function cancelAmpJobs() {
+export function cancelRigJobs() {
   pool?.cancelAll();
 }
 

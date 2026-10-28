@@ -5,7 +5,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 OUT_WASM=../web/public/engine/forge-dsp.wasm
-SRC="src/alloc.cpp src/api.cpp src/nam.cpp src/convolver.cpp src/rig.cpp"
+DSP="src/nam.cpp src/convolver.cpp src/rig.cpp src/chain.cpp src/blocks_drive.cpp src/blocks_dyn.cpp src/blocks_eq.cpp src/blocks_mod.cpp src/blocks_delay.cpp src/blocks_reverb.cpp src/blocks_pitch.cpp src/blocks_filter.cpp src/blocks_capture.cpp"
+SRC="src/alloc.cpp src/api.cpp $DSP"
 INC="-Isrc -Ivendor/signalsmith-stretch -Ivendor/signalsmith-linear/include"
 CXX=${CXX:-clang++}
 mkdir -p build "$(dirname "$OUT_WASM")"
@@ -25,6 +26,6 @@ if [[ "${1:-}" == "native" || "${1:-}" == "all" ]]; then
   OUT_NATIVE=../desktop/native/forge_native.node
   mkdir -p "$(dirname "$OUT_NATIVE")"
   $CXX -std=c++20 -O3 -fPIC -shared -fvisibility=hidden -fno-exceptions -DNDEBUG -DNODE_GYP_MODULE_NAME=forge_native \
-    -I"$NAPI_INC" $INC -o "$OUT_NATIVE" native/addon.cpp src/nam.cpp src/convolver.cpp src/rig.cpp -ldl -lpthread
+    -I"$NAPI_INC" $INC -o "$OUT_NATIVE" native/addon.cpp $DSP -ldl -lpthread
   echo "wrote $OUT_NATIVE ($(stat -c %s "$OUT_NATIVE") bytes)"
 fi

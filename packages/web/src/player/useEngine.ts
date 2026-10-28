@@ -3,8 +3,8 @@
 // engine's clock in external-media mode, so the cursor, loops and seeking keep working.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as alphaTab from '@coderline/alphatab';
-import type { AmpSettings, AudioAsset, PlaySource, SongRecord } from '@fretforge/shared';
-import { ENGINE_RATE, ampActive, ampKey, audioContext, processAmp, toInt16 } from '../audio/engine';
+import { ampToRig, emptyRig, rigAtBar, type AmpSettings, type AudioAsset, type PlaySource, type RigDoc, type SongRecord, type TrackRig } from '@fretforge/shared';
+import { ENGINE_RATE, ampActive, audioContext, processRigTrack, rigKey, rigQualityLevel, toInt16, type RigSegment } from '../audio/engine';
 import { MixEngine } from '../audio/mixEngine';
 import { SyncMap, Timeline, isSilent, renderTrack } from '../audio/tabAudio';
 import { api as server } from '../api';
@@ -21,7 +21,11 @@ export interface EngineInputs {
   /** changes whenever the score is rebuilt (transpose, new revision) */
   scoreKey: string;
   song: SongRecord;
+  /** 0.4 track amps (played as rigs) */
   amps: Record<string, AmpSettings>;
+  trackRigs: Record<string, TrackRig>;
+  /** the rig library (for track rigs) */
+  rigs: RigDoc[];
   playSource: PlaySource;
   audio: AudioAsset[];
   mix: Mix;
@@ -51,7 +55,46 @@ export interface EngineState {
 }
 
 const renderCache = new Map<string, Float32Array>();
-const ampCache = new Map<string, { data: Int16Array; scale: number }>();
+const ampCache = new Map<string, { ch: Int16Array[]; scale: number }>();
+
+/** what a track plays through: rigs over bar ranges (a dry stretch uses an empty rig) */
+interface RigPlan { key: string; segments(tl: Timeline, length: number): RigSegment[] }
+
+function rigPlan(track: number, trackRigs: Record<string, TrackRig>, amps: Record<string, AmpSettings>, rigs: RigDoc[]): RigPlan | null {
+  const tr = trackRigs[track];
+  const byId = (id: string | null | undefined) => (id ? rigs.find((r) => r.id === id) ?? null : null);
+  if (tr && tr.enabled !== false && (tr.rigId || tr.switches?.length)) {
+    const used = [tr.rigId, ...(tr.switches ?? []).map((s) => s.rigId)].map(byId).filter((r): r is RigDoc => !!r);
+    if (!used.length) return null;
+    const key = JSON.stringify([tr, used.map((r) => rigKey(r, -1))]);
+    return {
+      key,
+      segments: (tl, length) => {
+        const out: RigSegment[] = [];
+        let cur: (RigSegment & { id: string }) | null = null;
+        for (const b of tl.bars) {
+          const st = rigAtBar(tr, b.index);
+          const rig = byId(st.rigId);
+          const snapshot = rig ? Math.min(rig.snapshots.length - 1, st.snapshot ?? rig.snapshot) : 0;
+          const id = rig ? `${rig.id}:${snapshot}` : 'dry';
+          const at = Math.round((b.startMs / 1000) * ENGINE_RATE);
+          if (!cur || cur.id !== id) {
+            if (cur) { cur.end = at; out.push(cur); }
+            cur = { id, rig: rig ?? emptyRig('Dry'), snapshot, start: out.length || cur ? at : 0, end: length };
+          }
+        }
+        if (cur) { cur.end = length; out.push(cur); }
+        return out.length ? out.map(({ rig, snapshot, start, end }) => ({ rig, snapshot, start, end })) : [{ rig: byId(tr.rigId) ?? emptyRig('Dry'), snapshot: 0, start: 0, end: length }];
+      },
+    };
+  }
+  const amp = amps[track];
+  if (ampActive(amp)) {
+    const rig = ampToRig(amp, 'Amp');
+    return { key: JSON.stringify(['amp', amp, rigQualityLevel]), segments: (_tl, length) => [{ rig, snapshot: 0, start: 0, end: length }] };
+  }
+  return null;
+}
 const decoded = new Map<string, Promise<{ ch: Int16Array[]; durationMs: number }>>();
 
 function cachePut<V>(m: Map<string, V>, k: string, v: V, max: number) {
@@ -85,7 +128,7 @@ async function decodeAsset(a: AudioAsset): Promise<{ ch: Int16Array[]; durationM
 }
 
 export function useEngine(inp: EngineInputs): EngineState {
-  const { apiRef, score, scoreKey, amps, playSource, audio } = inp;
+  const { apiRef, score, scoreKey, amps, trackRigs, rigs, playSource, audio } = inp;
   const engineRef = useRef<MixEngine | null>(null);
   const [active, setActiveState] = useState(false);
   const activeRef = useRef(false);
@@ -101,7 +144,12 @@ export function useEngine(inp: EngineInputs): EngineState {
   const live = useRef(inp);
   live.current = inp;
 
-  const ampedTracks = useMemo(() => Object.entries(amps).filter(([k, a]) => ampActive(a) && score && Number(k) < score.tracks.length).map(([k]) => Number(k)), [amps, score]);
+  const plans = useMemo(() => {
+    const out: Record<number, RigPlan> = {};
+    for (const t of score?.tracks ?? []) { const p = rigPlan(t.index, trackRigs, amps, rigs); if (p) out[t.index] = p; }
+    return out;
+  }, [amps, trackRigs, rigs, score]);
+  const ampedTracks = useMemo(() => Object.keys(plans).map(Number), [plans]);
   const want = playSource === 'recording' ? audio.length > 0 : ampedTracks.length > 0;
 
   const engine = () => (engineRef.current ??= new MixEngine());
@@ -161,7 +209,7 @@ export function useEngine(inp: EngineInputs): EngineState {
   useEffect(() => () => { engineRef.current?.destroy(); engineRef.current = null; }, []);
 
   // ------------------------------------------------------------------ prepare sources
-  const prepKey = want ? `${playSource}|${scoreKey}|${playSource === 'tab' ? ampedTracks.map((t) => `${t}:${ampKey(amps[t])}`).join(',') : audio.map((x) => x.id + x.syncPoints.length + x.offsetMs).join(',')}` : '';
+  const prepKey = want ? `${playSource}|${scoreKey}|${playSource === 'tab' ? ampedTracks.map((t) => `${t}:${plans[t].key}:${rigQualityLevel}`).join(',') : audio.map((x) => x.id + x.syncPoints.length + x.offsetMs).join(',')}` : '';
 
   useEffect(() => {
     const a = apiRef.current;
@@ -207,32 +255,33 @@ export function useEngine(inp: EngineInputs): EngineState {
             }
             dry[t] = d;
             maxLen = Math.max(maxLen, d.length);
-            const amp = amps[t];
-            if (ampActive(amp) && !isSilent(d)) {
-              const akey = `${key}|${ampKey(amp)}`;
+            const plan = plans[t];
+            if (plan && !isSilent(d)) {
+              const akey = `${key}|${plan.key}|${rigQualityLevel}`;
               const cached = ampCache.get(akey);
               if (cached) {
-                e.setSource(`t${t}`, [cached.data], { scale: cached.scale });
+                e.setSource(`t${t}`, cached.ch, { scale: cached.scale });
                 st[t] = { phase: 'ready', progress: 1 };
               } else {
-                // play the dry track until the amp is done
+                // play the dry track until the rig is done
                 const i16 = toInt16(d);
                 e.setSource(`t${t}`, [i16.data], { scale: i16.scale });
                 st[t] = { phase: 'amp', progress: 0 };
-                ampJobs.push(processAmp(d, amp, ENGINE_RATE, (f) => { st[t] = { phase: 'amp', progress: f }; setTracks({ ...st }); }, signal)
+                const tempo = score.tempo || 120;
+                ampJobs.push(processRigTrack(d, plan.segments(tl, d.length), ENGINE_RATE, tempo, (f) => { st[t] = { phase: 'amp', progress: f }; setTracks({ ...st }); }, signal)
                   .then((wet) => {
                     if (signal.aborted) return;
-                    const w = toInt16(wet);
+                    const w = toInt16Stereo(wet.L, wet.R);
                     cachePut(ampCache, akey, w, 24);
-                    e.setSource(`t${t}`, [w.data], { scale: w.scale });
+                    e.setSource(`t${t}`, w.ch, { scale: w.scale });
                     st[t] = { phase: 'ready', progress: 1 };
                     setTracks({ ...st });
                   })
-                  .catch((err) => {
-                    if (signal.aborted || (err as Error).name === 'AbortError') return;
-                    st[t] = { phase: 'error', progress: 0, message: (err as Error).message };
+                  .catch((err: Error) => {
+                    if (signal.aborted || err.name === 'AbortError' || err.message === 'cancelled') return;
+                    st[t] = { phase: 'error', progress: 0, message: err.message };
                     setTracks({ ...st });
-                    live.current.onToast((err as Error).message);
+                    live.current.onToast(err.message);
                   }));
               }
             } else {
@@ -251,7 +300,7 @@ export function useEngine(inp: EngineInputs): EngineState {
           applyMix();
           if (!activeRef.current) { setPlayerMode(true); setActive(true); } else installHandler();
           if (ampJobs.length) {
-            setPreparing('Running the amps');
+            setPreparing('Running the rigs');
             await Promise.all(ampJobs);
             if (!signal.aborted) setPreparing(null);
           }
@@ -326,4 +375,15 @@ export function useEngine(inp: EngineInputs): EngineState {
   useEffect(() => { if (active) applyMix(); }, [active, inp.mix, inp.audioMix, inp.master, inp.speed, inp.pitch, inp.metro, inp.metroVol, inp.looping, inp.range]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return { active, preparing, progress, tracks, latencyMs, audioMs: () => engineRef.current?.lastMs ?? 0, timeline: () => timelineRef.current };
+}
+
+/** stereo float to 16-bit with one shared scale */
+function toInt16Stereo(L: Float32Array, R: Float32Array | null): { ch: Int16Array[]; scale: number } {
+  if (!R) { const m = toInt16(L); return { ch: [m.data], scale: m.scale }; }
+  let peak = 0;
+  for (let i = 0; i < L.length; i++) { const v = Math.max(Math.abs(L[i]), Math.abs(R[i])); if (v > peak) peak = v; }
+  const scale = Math.max(peak, 1e-6) / 32767, inv = 1 / scale;
+  const a = new Int16Array(L.length), b = new Int16Array(R.length);
+  for (let i = 0; i < L.length; i++) { a[i] = Math.round(L[i] * inv); b[i] = Math.round(R[i] * inv); }
+  return { ch: [a, b], scale };
 }

@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useState, type React
 import { defaultPrefs, type Prefs, type PublicUser } from '@fretforge/shared';
 import { api } from '../api';
 import { DialogHost } from './dialog';
-import { setRigLite } from '../audio/engine';
+import { setRigQuality } from '../audio/engine';
 
 // ---------------------------------------------------------------- routing (hash based, works from file:// and any host)
 export type Route =
@@ -10,7 +10,7 @@ export type Route =
   | { name: 'search'; q: string }
   | { name: 'song'; id: string; edit?: boolean }
   | { name: 'new' }
-  | { name: 'rig' }
+  | { name: 'rig'; tab: 'rigs' | 'library' | 'find' | 'train'; id?: string; type?: string }
   | { name: 'jobs' }
   | { name: 'invite'; token: string }
   | { name: 'share'; token: string }
@@ -25,7 +25,11 @@ export function parseRoute(hash: string): Route {
   if (parts[0] === 'song' && parts[1]) return { name: 'song', id: parts[1], edit: params.get('edit') === '1' };
   if (parts[0] === 'search') return { name: 'search', q: params.get('q') ?? '' };
   if (parts[0] === 'settings') return { name: 'settings' };
-  if (parts[0] === 'rig') return { name: 'rig' };
+  if (parts[0] === 'rig') {
+    if (parts[1] === 'r' && parts[2]) return { name: 'rig', tab: 'rigs', id: parts[2] };
+    if (parts[1] === 'library' || parts[1] === 'find' || parts[1] === 'train') return { name: 'rig', tab: parts[1], type: params.get('type') ?? undefined };
+    return { name: 'rig', tab: 'rigs' };
+  }
   if (parts[0] === 'jobs') return { name: 'jobs' };
   if (parts[0] === 'new') return { name: 'new' };
   if (parts[0] === 'invite' && parts[1]) return { name: 'invite', token: parts[1] };
@@ -78,7 +82,7 @@ export function AppProvider({ children, mode, version, user }: { children: React
   const [msg, setMsg] = useState<string | null>(null);
 
   useEffect(() => { api.prefs().then(setLocal).catch(() => {}); }, []);
-  useEffect(() => { setRigLite(prefs.rigQuality === 'eco'); }, [prefs.rigQuality]);
+  useEffect(() => { setRigQuality(prefs.rigQuality); }, [prefs.rigQuality]);
   useEffect(() => {
     const apply = () => { document.documentElement.dataset.theme = resolvedTheme(prefs.theme); };
     apply();

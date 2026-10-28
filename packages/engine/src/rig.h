@@ -5,29 +5,14 @@
 // Blocks with nothing loaded or switched off are skipped. NAM and IR objects are owned by the
 // caller so they can be swapped without touching the rest of the chain.
 #pragma once
+#include "dsp.h"
 
 namespace forge {
 
 class NamModel;
 class Convolver;
 
-struct Biquad {
-  float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
-  float z1 = 0, z2 = 0;
-  bool active = false;
-  inline float run(float x) {
-    const float y = b0 * x + z1;
-    z1 = b1 * x - a1 * y + z2;
-    z2 = b2 * x - a2 * y;
-    return y;
-  }
-  void reset() { z1 = z2 = 0; }
-  void lowCut(float sr, float hz);
-  void highCut(float sr, float hz);
-  void peak(float sr, float hz, float q, float db);
-  void lowShelf(float sr, float hz, float db);
-  void highShelf(float sr, float hz, float db);
-};
+
 
 enum RigParam {
   P_INPUT_DB = 0,

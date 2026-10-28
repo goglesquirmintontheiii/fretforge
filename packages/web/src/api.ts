@@ -1,4 +1,4 @@
-import type { AmpSettings, AudioAsset, Comment, Instrument, Invite, Job, OnlineResult, OnlineSearchResponse, Playlist, Prefs, PublicUser, Revision, RigFile, RigPreset, Role, ShareLink, SongRecord, StatusResponse, SyncPoint, TextTab } from '@fretforge/shared';
+import type { AmpSettings, AudioAsset, Comment, Instrument, Invite, Job, NamRole, NamSearchModel, NamSearchQuery, NamSearchResponse, NamSearchResult, NamSearchSource, OnlineResult, OnlineSearchResponse, Playlist, Prefs, PublicUser, Revision, RigDoc, RigFile, RigPreset, Role, Setlist, ShareLink, SongRecord, StatusResponse, SyncPoint, TextTab } from '@fretforge/shared';
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number) { super(message); }
@@ -26,6 +26,8 @@ const files = (fs: File[], field = 'file') => {
   for (const f of fs) fd.append(field, f, f.name);
   return { method: 'POST', body: fd } as RequestInit;
 };
+
+export interface RigImport { added: RigFile[]; existing: RigFile[]; errors: { name: string; message: string }[] }
 
 export interface SongQuery { q?: string; instrument?: Instrument | 'all'; sort?: string; favorites?: boolean; limit?: number; tuning?: string; source?: string; audio?: boolean; playlist?: string; mine?: boolean; offline?: boolean }
 
@@ -85,13 +87,35 @@ export const api = {
   separatePlaylist: (id: string, scheduled = true) => call<{ added: Job[] }>(`/api/playlists/${id}/separate`, json({ scheduled })),
 
   rigFiles: () => call<{ files: RigFile[] }>('/api/rig/files'),
-  uploadRigFiles: (fs: File[]) => call<{ added: RigFile[]; errors: { name: string; message: string }[] }>('/api/rig/files', files(fs)),
+  uploadRigFiles: (fs: File[], role: NamRole | 'auto' = 'auto') => {
+    const fd = new FormData();
+    fd.append('role', role);
+    for (const f of fs) fd.append('file', f, f.name);
+    return call<RigImport>('/api/rig/files', { method: 'POST', body: fd });
+  },
   patchRigFile: (id: string, p: Partial<RigFile>) => call<RigFile>(`/api/rig/files/${id}`, json(p, 'PATCH')),
   deleteRigFile: (id: string) => call(`/api/rig/files/${id}`, { method: 'DELETE' }),
   rigPresets: () => call<{ presets: RigPreset[] }>('/api/rig/presets'),
   saveRigPreset: (name: string, amp: AmpSettings) => call<RigPreset>('/api/rig/presets', json({ name, amp })),
   patchRigPreset: (id: string, p: { name?: string; amp?: AmpSettings }) => call<RigPreset>(`/api/rig/presets/${id}`, json(p, 'PATCH')),
   deleteRigPreset: (id: string) => call(`/api/rig/presets/${id}`, { method: 'DELETE' }),
+  rigs: () => call<{ rigs: RigDoc[] }>('/api/rigs'),
+  rig: (id: string) => call<RigDoc>(`/api/rigs/${id}`),
+  createRig: (r: Partial<RigDoc>) => call<RigDoc>('/api/rigs', json(r)),
+  saveRig: (r: RigDoc) => call<RigDoc>(`/api/rigs/${r.id}`, json(r, 'PUT')),
+  deleteRig: (id: string) => call(`/api/rigs/${id}`, { method: 'DELETE' }),
+  setlists: () => call<{ setlists: Setlist[] }>('/api/setlists'),
+  createSetlist: (name: string, rigIds: string[] = []) => call<Setlist>('/api/setlists', json({ name, rigIds })),
+  saveSetlist: (id: string, p: { name?: string; rigIds?: string[] }) => call<Setlist>(`/api/setlists/${id}`, json(p, 'PUT')),
+  deleteSetlist: (id: string) => call(`/api/setlists/${id}`, { method: 'DELETE' }),
+  namSources: () => call<{ tone3000: { configured: boolean; connected: boolean; username: string | null }; github: string[] }>('/api/nam/sources'),
+  namSearch: (source: NamSearchSource, query: Partial<NamSearchQuery>, signal?: AbortSignal) => call<NamSearchResponse>('/api/nam/search', { ...json({ source, query }), signal }),
+  namImport: (p: { source: NamSearchSource; id: string; modelIds?: string[]; role?: NamRole | 'auto' }) => call<RigImport>('/api/nam/import', json(p)),
+  tone3000Connect: (select = false, types: string[] = []) => call<{ url: string }>(`/api/nam/tone3000/connect?select=${select ? 1 : 0}&types=${types.join(',')}`),
+  tone3000Selected: () => call<{ toneId: string | null }>('/api/nam/tone3000/selected'),
+  tone3000Tone: (id: string) => call<{ tone: NamSearchResult; models: NamSearchModel[] }>(`/api/nam/tone3000/tones/${id}`),
+  tone3000Disconnect: () => call('/api/nam/tone3000/disconnect', { method: 'POST' }),
+  namGithubSources: (sources: string[]) => call<{ github: string[] }>('/api/nam/github', json({ sources }, 'PUT')),
   trainNam: (wav: Blob, name: string, epochs: number) => call<Job>(`/api/rig/train?name=${encodeURIComponent(name)}&epochs=${epochs}`, bin(wav)),
 
   audio: (songId: string) => call<{ audio: AudioAsset[] }>(`/api/songs/${songId}/audio`),

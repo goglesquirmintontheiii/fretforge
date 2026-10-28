@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as alphaTab from '@coderline/alphatab';
-import type { AmpSettings, AudioAsset, Instrument, PlaySource, PracticeState, SongRecord } from '@fretforge/shared';
+import type { AmpSettings, AudioAsset, Instrument, PlaySource, PracticeState, SongRecord, TrackRig } from '@fretforge/shared';
 import { INSTRUMENT_LABELS, capoShapeName, chordFromPitches, chordShapes, formatTime, gainToDb, tuningName } from '@fretforge/shared';
 import { api } from '../api';
 import { go, useApp } from '../lib/app';
@@ -14,6 +14,8 @@ import { Tuner } from './Tuner';
 import { ShortcutsHelp } from './Shortcuts';
 import { useEngine } from './useEngine';
 import { AmpDialog } from './AmpDialog';
+import { TrackRigDialog } from './TrackRigDialog';
+import { useRigs } from '../rig/rigStore';
 import { AudioPanel } from './AudioPanel';
 import { ampActive } from '../audio/engine';
 import { useEditor } from '../editor/useEditor';
@@ -109,6 +111,9 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
   const [audio, setAudio] = useState<AudioAsset[]>([]);
   const [audioMix, setAudioMix] = useState<NonNullable<PracticeState['audioMix']>>(() => p.audioMix ?? {});
   const [ampFor, setAmpFor] = useState<number | null>(null);
+  const [rigFor, setRigFor] = useState<number | null>(null);
+  const [trackRigs, setTrackRigs] = useState<Record<string, TrackRig>>(() => p.trackRigs ?? {});
+  const rigList = useRigs() ?? [];
   const [scoreKey, setScoreKey] = useState('');
   const transposeRef = useRef(transpose);
   transposeRef.current = transpose;
@@ -122,7 +127,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
 
   const [editingNow, setEditingNow] = useState(!!edit);
   const engine = useEngine({
-    apiRef, score, scoreKey, song, amps: editingNow ? {} : amps, playSource: editingNow ? 'tab' : effSource, audio: editingNow ? [] : audio, mix, audioMix, master, speed, pitch, metro, metroVol, countIn, looping, range, onToast,
+    apiRef, score, scoreKey, song, amps: editingNow ? {} : amps, trackRigs: editingNow ? {} : trackRigs, rigs: rigList, playSource: editingNow ? 'tab' : effSource, audio: editingNow ? [] : audio, mix, audioMix, master, speed, pitch, metro, metroVol, countIn, looping, range, onToast,
   });
   const engineOn = useRef(false);
   engineOn.current = engine.active;
@@ -377,8 +382,8 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
 
   // persist practice state
   useEffect(() => {
-    onPatch({ practice: { speed, loop: range, mixer: mix, masterVolume: master, transpose, pitchShift: pitch, visibleTracks: visible, view, capo, amps, playSource, audioMix } });
-  }, [speed, range, mix, master, transpose, pitch, visible, view, capo, amps, playSource, audioMix, onPatch]);
+    onPatch({ practice: { speed, loop: range, mixer: mix, masterVolume: master, transpose, pitchShift: pitch, visibleTracks: visible, view, capo, amps, trackRigs, playSource, audioMix } });
+  }, [speed, range, mix, master, transpose, pitch, visible, view, capo, amps, trackRigs, playSource, audioMix, onPatch]);
 
   // ------------------------------------------------------------------ actions
   const a = () => apiRef.current;
@@ -658,7 +663,9 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
                   const info = song.tracks[t.index];
                   const amp = amps[t.index];
                   const ts = engine.tracks[t.index];
-                  const hasAmp = ampActive(amp);
+                  const tr = trackRigs[t.index];
+                  const trRig = tr && tr.enabled !== false ? rigList.find((r) => r.id === tr.rigId) : undefined;
+                  const hasAmp = !!trRig || !!(tr && tr.enabled !== false && tr.switches?.length) || (!tr && ampActive(amp));
                   return (
                     <div className="mixrow" key={t.index}>
                       <div style={{ minWidth: 0, display: 'flex', gap: 7, alignItems: 'center' }}>
@@ -666,14 +673,15 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
                         <div style={{ minWidth: 0 }}>
                           <div className="nm" title={t.name}>{t.name || `Track ${t.index + 1}`}</div>
                           <div className="sub">{info?.tuningName ?? (info?.isPercussion ? 'Drums' : '')} <span className="db">{gainToDb(m.mute ? 0 : m.volume)}</span>
-                            {hasAmp && ts?.phase === 'amp' && <span className="badge info" style={{ marginLeft: 4 }}>amp {Math.round(ts.progress * 100)}%</span>}
-                            {ts?.phase === 'error' && <span className="badge bad" style={{ marginLeft: 4 }} title={ts.message}>amp failed</span>}
+                            {trRig && ts?.phase !== 'amp' && <span className="badge accent" style={{ marginLeft: 4 }} title={`Rig: ${trRig.name}`}>{trRig.name}</span>}
+                            {hasAmp && ts?.phase === 'amp' && <span className="badge info" style={{ marginLeft: 4 }}>rig {Math.round(ts.progress * 100)}%</span>}
+                            {ts?.phase === 'error' && <span className="badge bad" style={{ marginLeft: 4 }} title={ts.message}>rig failed</span>}
                           </div>
                         </div>
                       </div>
                       <span style={{ display: 'flex', gap: 4 }}>
                         {!t.staves[0]?.isPercussion && canEdit !== undefined && (
-                          <button className={'ampbtn' + (hasAmp ? ' on' : '')} title={hasAmp ? 'Edit the amp on this track' : 'Put an amp (NAM model, cab IR) on this track'} aria-label={`Amp for ${t.name}`} onClick={() => setAmpFor(t.index)}>AMP</button>
+                          <button className={'ampbtn' + (hasAmp ? ' on' : '')} title={hasAmp ? 'Change the rig on this track' : 'Play this track through a rig (amps, cabs, pedals)'} aria-label={`Rig for ${t.name}`} onClick={() => setRigFor(t.index)}>RIG</button>
                         )}
                         <button className={'vis' + (visible.includes(t.index) ? ' on' : '')} title="Show this track in the score" aria-pressed={visible.includes(t.index)} onClick={() => toggleVisible(t.index)}>👁</button>
                       </span>
@@ -718,7 +726,7 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
                 </div>
               </div>
               <p className="faint" style={{ margin: 0, fontSize: 12 }}>
-                {engine.active ? `Mix mode: tracks play from renders${effSource === 'tab' ? ' through their amps' : ''}. ` : ''}👁 shows a track in the score. Double-click a fader to reset it.
+                {engine.active ? `Mix mode: tracks play from renders${effSource === 'tab' ? ' through their rigs' : ''}. ` : ''}👁 shows a track in the score. Double-click a fader to reset it.
               </p>
             </div>
           )}
@@ -878,6 +886,14 @@ export function ScorePlayer({ song, onClose, onPatch, onToast, edit, readOnly, l
       {tuner && <Tuner tuning={focusTuning.length ? focusTuning : [64, 59, 55, 50, 45, 40]} tuningLabel={tuningLabel} referencePitch={prefs.referencePitch} onClose={() => setTuner(false)} />}
       {help && <ShortcutsHelp onClose={() => setHelp(false)} />}
       {revs && <RevisionsDialog song={song} onClose={() => setRevs(false)} onChanged={(s2) => { onSongChange?.(s2); }} onHighlight={(b) => setMarks(b)} />}
+      {rigFor !== null && tracks[rigFor] && (
+        <TrackRigDialog trackName={tracks[rigFor].name || `Track ${rigFor + 1}`} value={trackRigs[rigFor]} legacyAmp={ampActive(amps[rigFor]) ? amps[rigFor] : undefined}
+          state={engine.tracks[rigFor]} currentBar={bar} barCount={score?.masterBars.length ?? 1}
+          onChange={(v) => setTrackRigs((cur) => { const n = { ...cur }; if (v) n[rigFor] = v; else delete n[rigFor]; return n; })}
+          onEditLegacy={() => { setAmpFor(rigFor); setRigFor(null); }}
+          onRemoveLegacy={() => setAmps((cur) => { const n = { ...cur }; delete n[rigFor]; return n; })}
+          onClose={() => setRigFor(null)} />
+      )}
       {ampFor !== null && tracks[ampFor] && (
         <AmpDialog trackName={tracks[ampFor].name || `Track ${ampFor + 1}`} value={amps[ampFor]} state={engine.tracks[ampFor]}
           onChange={(a) => setAmps((cur) => { const n = { ...cur }; if (a) n[ampFor] = a; else delete n[ampFor]; return n; })}

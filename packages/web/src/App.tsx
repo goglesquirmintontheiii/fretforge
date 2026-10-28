@@ -1,7 +1,8 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import type { StatusResponse } from '@fretforge/shared';
 import { api } from './api';
-import { AppProvider, go, parseRoute, useRoute } from './lib/app';
+import { AppProvider, go, parseRoute, useApp, useRoute } from './lib/app';
+import { LiveRigProvider } from './rig/LiveRig';
 import { TopBar } from './components/TopBar';
 import { LibraryView } from './components/LibraryView';
 import { SearchView } from './components/SearchView';
@@ -34,9 +35,14 @@ export function App() {
 
   return (
     <AppProvider mode={status.mode} version={status.version} user={status.user}>
-      <Shell />
+      <LiveShell />
     </AppProvider>
   );
+}
+
+function LiveShell() {
+  const { toast } = useApp();
+  return <LiveRigProvider onError={toast}><Shell /></LiveRigProvider>;
 }
 
 function Shell() {
@@ -52,7 +58,7 @@ function Shell() {
           {route.name === 'library' && <LibraryView playlist={route.playlist} view={route.view} />}
           {route.name === 'search' && <SearchView q={route.q} />}
           {route.name === 'settings' && <SettingsView />}
-          {route.name === 'rig' && <RigView />}
+          {route.name === 'rig' && <RigView tab={route.tab} id={route.id} type={route.type} />}
           {route.name === 'jobs' && <JobsView />}
           {route.name === 'new' && <NewTabView />}
           {(route.name === 'invite' || route.name === 'signin') && <LibraryView />}

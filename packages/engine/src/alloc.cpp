@@ -27,3 +27,7 @@ void operator delete[](void* p, std::size_t, std::align_val_t) noexcept { std::f
 extern "C" void* __cxa_allocate_exception(std::size_t) { std::abort(); }
 extern "C" void __cxa_throw(void*, void*, void (*)(void*)) { std::abort(); }
 #endif
+
+#if defined(__wasm__)
+extern "C" void __cxa_pure_virtual() { std::abort(); }
+#endif

@@ -5,6 +5,7 @@
 #include <cstring>
 #include <new>
 
+#include "chain.h"
 #include "convolver.h"
 #include "nam.h"
 #include "rig.h"
@@ -30,7 +31,7 @@ struct Stretcher {
 };
 } // namespace
 
-FF_EXPORT(ff_version) int ff_version() { return 1; }
+FF_EXPORT(ff_version) int ff_version() { return 2; }
 FF_EXPORT(ff_alloc) void* ff_alloc(int bytes) { return std::calloc((size_t)(bytes > 0 ? bytes : 1), 1); }
 FF_EXPORT(ff_free) void ff_free(void* p) { std::free(p); }
 FF_EXPORT(ff_error) const char* ff_error() { return g_error; }
@@ -104,3 +105,45 @@ FF_EXPORT(st_seek) void st_seek(Stretcher* s, int inN, double rate) {
   if (inN > s->maxIn) inN = s->maxIn;
   s->s.seek(s->in, inN, rate);
 }
+
+// ------------------------------------------------------------------ rig graphs (offline rendering) and the live chain
+FF_EXPORT(block_param_count) int block_param_count(int type) { return blockParamCount(type); }
+FF_EXPORT(graph_create) Graph* graph_create(const float* desc, int len, float sampleRate, int maxBlock, int offline) {
+  const char* err = nullptr;
+  Graph* g = Graph::build(desc, len, sampleRate, maxBlock, offline != 0, &err);
+  if (!g) g_error = err ? err : "could not build the rig";
+  return g;
+}
+FF_EXPORT(graph_destroy) void graph_destroy(Graph* g) { delete g; }
+FF_EXPORT(graph_block_count) int graph_block_count(Graph* g) { return g ? g->blockCount() : 0; }
+// the graph takes ownership of models and IRs
+FF_EXPORT(graph_set_nam) void graph_set_nam(Graph* g, int block, NamModel* m, float gain) { if (g) g->setNam(block, m, gain); else delete m; }
+FF_EXPORT(graph_set_ir) void graph_set_ir(Graph* g, int block, int slot, Convolver* c) { if (g) g->setIr(block, slot, c); else delete c; }
+FF_EXPORT(graph_set_param) void graph_set_param(Graph* g, int block, int index, float v) { if (g) g->setParam(block, index, v); }
+FF_EXPORT(graph_set_enabled) void graph_set_enabled(Graph* g, int block, int on) { if (g) g->setEnabled(block, on != 0); }
+FF_EXPORT(graph_set_tempo) void graph_set_tempo(Graph* g, float bpm) { if (g) g->setTempo(bpm); }
+FF_EXPORT(graph_set_quality) void graph_set_quality(Graph* g, int q) { if (g) g->setQuality(q); }
+FF_EXPORT(graph_reset) void graph_reset(Graph* g) { if (g) g->reset(); }
+FF_EXPORT(graph_latency) int graph_latency(Graph* g) { return g ? g->latency() : 0; }
+FF_EXPORT(graph_process) int graph_process(Graph* g, float* L, float* R, int n) {
+  if (!g) { std::memcpy(R, L, sizeof(float) * (size_t)n); return 0; }
+  return g->process(L, R, n) ? 1 : 0;
+}
+
+FF_EXPORT(chain_create) Chain* chain_create(float sampleRate, int maxBlock) { return new (std::nothrow) Chain(sampleRate, maxBlock); }
+FF_EXPORT(chain_destroy) void chain_destroy(Chain* c) { delete c; }
+FF_EXPORT(chain_swap) void chain_swap(Chain* c, Graph* g) { if (c) c->swap(g); else delete g; }
+FF_EXPORT(chain_collect) void chain_collect(Chain* c) { if (c) delete c->collect(); }
+FF_EXPORT(chain_set_param) void chain_set_param(Chain* c, int block, int index, float v) { if (c) c->setParam(block, index, v); }
+FF_EXPORT(chain_set_enabled) void chain_set_enabled(Chain* c, int block, int on) { if (c) c->setEnabled(block, on != 0); }
+FF_EXPORT(chain_trigger) void chain_trigger(Chain* c, int block, int action) { if (c) c->trigger(block, action); }
+FF_EXPORT(chain_set_tempo) void chain_set_tempo(Chain* c, float bpm) { if (c) c->setTempo(bpm); }
+FF_EXPORT(chain_set_quality) void chain_set_quality(Chain* c, int q) { if (c) c->setQuality(q); }
+FF_EXPORT(chain_set_io) void chain_set_io(Chain* c, int which, float v) { if (c) c->setIo(which, v); }
+FF_EXPORT(chain_process) void chain_process(Chain* c, const float* in, float* L, float* R, int n) { if (c) c->process(in, L, R, n); }
+FF_EXPORT(chain_in_peak) float chain_in_peak(Chain* c) { return c ? c->takeInPeak() : 0.f; }
+FF_EXPORT(chain_out_peak) float chain_out_peak(Chain* c) { return c ? c->takeOutPeak() : 0.f; }
+FF_EXPORT(chain_tuner_hz) float chain_tuner_hz(Chain* c) { return c ? c->tunerHz() : 0.f; }
+FF_EXPORT(chain_latency) int chain_latency(Chain* c) { return c ? c->latency() : 0; }
+FF_EXPORT(chain_block_meter) float chain_block_meter(Chain* c, int b) { return c ? c->blockMeter(b) : 0.f; }
+FF_EXPORT(chain_block_state) int chain_block_state(Chain* c, int b) { return c ? c->blockState(b) : 0; }

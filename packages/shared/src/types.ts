@@ -93,8 +93,10 @@ export const defaultAmp: AmpSettings = {
 export type PlaySource = 'tab' | 'recording';
 
 export interface PracticeState {
-  /** per tab track index */
+  /** per tab track index: the 0.4 amp (still played; converted to a rig on the fly) */
   amps?: Record<string, AmpSettings>;
+  /** per tab track index: the rig the track plays through, with switches at bars */
+  trackRigs?: Record<string, import('./rig').TrackRig>;
   /** what plays: the synth/amp renders of the tab, or the recording and its stems */
   playSource?: PlaySource;
   /** mixer state for audio assets by asset id */
@@ -177,12 +179,22 @@ export interface Prefs {
   /** offline cache budget in MB (PWA) */
   offlineMb: number;
   ai: AiSettings;
-  /** rig quality: eco uses the lightest variant of models that include several */
-  rigQuality: 'eco' | 'standard';
+  /** rig quality: eco uses the lightest variant of models that include several and no oversampling; high oversamples drives 4x */
+  rigQuality: 'eco' | 'standard' | 'high';
+  /** GitHub repositories searched for free NAM models (owner/repo or owner/repo/path) */
+  namSources: string[];
+  /** TONE3000 publishable key (client id) for the API */
+  tone3000ClientId: string;
+  /** the tab view (tab, notation, both) used for every song unless a song overrides it */
+  view: 'tab' | 'notation' | 'both';
+  /** how strongly the current bar is highlighted while playing */
+  barHighlight: 'off' | 'subtle' | 'strong';
+  /** desktop: downloads in the embedded TONE3000 page go straight to the rig library */
+  tone3000Capture: boolean;
 }
 
 /** Settings that belong to the person, not the server. */
-export const USER_PREF_KEYS = ['instrument', 'theme', 'leftHanded', 'referencePitch', 'countInBars', 'followCursor', 'zoom', 'layout', 'offlineMb', 'rigQuality'] as const;
+export const USER_PREF_KEYS = ['instrument', 'theme', 'leftHanded', 'referencePitch', 'countInBars', 'followCursor', 'zoom', 'layout', 'offlineMb', 'rigQuality', 'view', 'barHighlight', 'tone3000Capture'] as const;
 
 export const defaultPrefs: Prefs = {
   instrument: 'all',
@@ -199,6 +211,11 @@ export const defaultPrefs: Prefs = {
   offlineMb: 500,
   ai: defaultAi,
   rigQuality: 'standard',
+  namSources: ['pelennor2170/NAM_models'],
+  tone3000ClientId: '',
+  view: 'tab',
+  barHighlight: 'subtle',
+  tone3000Capture: true,
 };
 
 export type Role = 'owner' | 'member' | 'viewer';
@@ -281,12 +298,39 @@ export interface ShareLink {
 
 export type RigFileKind = 'nam' | 'ir';
 
+/** what a capture is: decides where it goes in the rig editor */
+export type NamRole = 'amp' | 'preamp' | 'pedal' | 'cab' | 'full-rig' | 'outboard';
+
+export const NAM_ROLES: { id: NamRole; label: string }[] = [
+  { id: 'amp', label: 'Amp' }, { id: 'preamp', label: 'Preamp' }, { id: 'pedal', label: 'Pedal' },
+  { id: 'cab', label: 'Cab' }, { id: 'full-rig', label: 'Full rig' }, { id: 'outboard', label: 'Outboard' },
+];
+
+export interface RigFileSource {
+  kind: 'upload' | 'tone3000' | 'github' | 'url';
+  url?: string;
+  /** TONE3000 tone id or repository path */
+  ref?: string;
+  creator?: string;
+  license?: string;
+}
+
 export interface RigFile {
   id: string;
   kind: RigFileKind;
   name: string;
   fileName: string;
   tags: string[];
+  /** NAM: what the capture is (IRs are always cabs) */
+  role?: NamRole;
+  /** tone words (clean, crunch, high gain...) and genres */
+  tones?: string[];
+  genres?: string[];
+  /** zip pack or tone the file came with */
+  pack?: string;
+  /** sha1 of the file, to skip duplicates */
+  hash?: string;
+  source?: RigFileSource;
   /** amp, pedal, full rig, cab ... */
   gearType?: string;
   gearMake?: string;
@@ -360,4 +404,62 @@ export interface Job {
   scheduled?: boolean;
   params?: Record<string, unknown>;
   result?: Record<string, unknown>;
+}
+
+// ------------------------------------------------------------------ NAM model search
+export type NamSearchSource = 'tone3000' | 'github';
+export type NamType = 'amp' | 'preamp' | 'full-rig' | 'pedal' | 'cab' | 'ir' | 'outboard' | 'experimental';
+
+export const NAM_TONES = ['Clean', 'Jazz', 'Crunch', 'Overdrive', 'Distortion', 'High gain', 'Fuzz', 'Bass'] as const;
+export const NAM_GENRES = ['Metal', 'Djent', 'Hard rock', 'Rock', 'Classic rock', 'Punk', 'Grunge', 'Indie', 'Blues', 'Jazz', 'Country', 'Funk', 'Pop', 'Worship', 'Ambient', 'Doom'] as const;
+export const NAM_TYPES: { id: NamType; label: string }[] = [
+  { id: 'amp', label: 'Amp' }, { id: 'preamp', label: 'Preamp' }, { id: 'full-rig', label: 'Full rig' }, { id: 'pedal', label: 'Pedal' },
+  { id: 'cab', label: 'Cab (NAM)' }, { id: 'ir', label: 'Cab (IR)' }, { id: 'outboard', label: 'Outboard' }, { id: 'experimental', label: 'Experimental' },
+];
+
+export interface NamSearchQuery {
+  q: string;
+  tones: string[];
+  genres: string[];
+  types: NamType[];
+  /** TONE3000 list to use (the free API has no catalog search) */
+  list?: 'trending' | 'latest' | 'favorited' | 'downloaded' | 'created';
+  page?: number;
+}
+
+export interface NamSearchModel { id: string; name: string; size?: string; architecture?: string | null }
+
+export interface NamSearchResult {
+  source: NamSearchSource;
+  id: string;
+  title: string;
+  creator?: string;
+  creatorUrl?: string;
+  avatar?: string | null;
+  url: string;
+  type: NamType;
+  tags: string[];
+  tones: string[];
+  genres: string[];
+  makes: string[];
+  license?: string;
+  modelCount?: number;
+  downloads?: number;
+  favorites?: number;
+  image?: string | null;
+  /** rig library ids when already imported */
+  savedIds?: string[];
+}
+
+export interface NamSearchResponse {
+  source: NamSearchSource;
+  results: NamSearchResult[];
+  error?: string;
+  /** TONE3000: not connected yet */
+  needsAuth?: boolean;
+  /** TONE3000: no publishable key configured */
+  needsKey?: boolean;
+  total?: number;
+  page?: number;
+  pages?: number;
 }

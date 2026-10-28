@@ -1,7 +1,8 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell, type Session } from 'electron';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, join } from 'node:path';
 import { createServer, VERSION, type FretforgeServer } from '@fretforge/server';
 
 const SELFTEST = process.env.FRETFORGE_SELFTEST; // path for a screenshot; used by CI to check a packaged build
@@ -109,11 +110,16 @@ async function start() {
     title: 'Fretforge',
     autoHideMenuBar: true,
     icon: resourcePath('icon.png'),
-    webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, spellcheck: false },
+    webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, spellcheck: false, webviewTag: true },
   });
   win.on('resize', saveBounds);
+  setupTone3000(win);
   win.on('move', saveBounds);
   win.webContents.setWindowOpenHandler(({ url }) => {
+    // TONE3000 sign-in and tone picker open in a small window that shares the embedded page's login
+    if (url.startsWith(`${T3K}/api/v1/oauth/`)) {
+      return { action: 'allow', overrideBrowserWindowOptions: { width: 1000, height: 820, autoHideMenuBar: true, parent: win ?? undefined, title: 'TONE3000', webPreferences: { partition: T3K_PARTITION, sandbox: true, contextIsolation: true } } };
+    }
     if (/^https?:\/\//.test(url) && !url.startsWith(origin)) shell.openExternal(url);
     return { action: 'deny' };
   });
@@ -147,8 +153,11 @@ async function start() {
 
 // ------------------------------------------------------------------ native rig engine (JACK)
 interface NativeEngine {
-  status(): unknown; start(o: object): unknown; stop(): unknown; loadNam(c: Int32Array, w: Float32Array, g: number): unknown;
-  clearNam(): unknown; loadIr(d: Float32Array | null): unknown; setParam(id: number, v: number): unknown; meters(): unknown; measureLatency(): unknown;
+  status(): unknown; start(o: object): unknown; stop(): unknown; ports(): unknown; connections(): unknown;
+  connect(ours: string, other: string, on: boolean): boolean;
+  loadGraph(desc: Float32Array, nams: unknown[], irs: unknown[]): unknown;
+  control(op: string, a: number, b?: number, c?: number): boolean;
+  meters(): unknown; measureLatency(): unknown;
 }
 let native: NativeEngine | null | undefined;
 let nativeError = '';
@@ -169,12 +178,64 @@ const unavailable = () => ({ available: false, running: false, reason: nativeErr
 ipcMain.handle('ff:engine:status', () => nativeEngine()?.status() ?? unavailable());
 ipcMain.handle('ff:engine:start', (_e, o: object) => { const n = nativeEngine(); if (!n) throw new Error(nativeError); return n.start({ name: 'Fretforge', ...(o ?? {}) }); });
 ipcMain.handle('ff:engine:stop', () => nativeEngine()?.stop());
-ipcMain.handle('ff:engine:loadNam', (_e, code: Int32Array, weights: Float32Array, gain: number) => nativeEngine()?.loadNam(code, weights, gain));
-ipcMain.handle('ff:engine:clearNam', () => nativeEngine()?.clearNam());
-ipcMain.handle('ff:engine:loadIr', (_e, data: Float32Array | null) => nativeEngine()?.loadIr(data));
-ipcMain.on('ff:engine:setParam', (_e, id: number, v: number) => { nativeEngine()?.setParam(id, v); });
-ipcMain.handle('ff:engine:meters', () => nativeEngine()?.meters() ?? { input: 0, output: 0, load: 0, xruns: 0 });
+ipcMain.handle('ff:engine:ports', () => nativeEngine()?.ports() ?? { sources: [], sinks: [] });
+ipcMain.handle('ff:engine:connections', () => nativeEngine()?.connections() ?? {});
+ipcMain.handle('ff:engine:connect', (_e, ours: string, other: string, on: boolean) => nativeEngine()?.connect(ours, other, on) ?? false);
+ipcMain.handle('ff:engine:loadGraph', (_e, desc: Float32Array, nams: unknown[], irs: unknown[]) => { const n = nativeEngine(); if (!n) throw new Error(nativeError); return n.loadGraph(desc, nams, irs); });
+ipcMain.on('ff:engine:control', (_e, op: string, a: number, b?: number, c?: number) => { nativeEngine()?.control(op, a, b ?? 0, c ?? 0); });
+ipcMain.handle('ff:engine:meters', () => nativeEngine()?.meters() ?? { input: 0, output: 0, load: 0, xruns: 0, tunerHz: 0, blocks: [], states: [], midi: [] });
 ipcMain.handle('ff:engine:measureLatency', () => nativeEngine()?.measureLatency() ?? { roundTripMs: null, message: nativeError });
+
+// ------------------------------------------------------------------ embedded TONE3000
+// The search menu shows tone3000.com in a <webview>. A small script adds "Add to Fretforge"
+// buttons next to download controls; downloads it arms (or every download, when capture is on)
+// go into the rig library instead of the Downloads folder.
+const T3K = 'https://www.tone3000.com';
+const T3K_PARTITION = 'persist:tone3000';
+let t3kCapture = true;
+let t3kArmedUntil = 0;
+let t3kPage: { url?: string; title?: string; creator?: string } = {};
+
+function setupTone3000(main: BrowserWindow) {
+  const ses = session.fromPartition(T3K_PARTITION);
+  main.webContents.on('will-attach-webview', (event, prefs, params) => {
+    if (!params.src.startsWith(T3K)) { event.preventDefault(); return; }
+    delete (prefs as { preloadURL?: string }).preloadURL;
+    prefs.preload = join(__dirname, 't3kPreload.cjs');
+    prefs.nodeIntegration = false;
+    prefs.contextIsolation = true;
+    prefs.sandbox = true;
+    params.partition = T3K_PARTITION;
+  });
+  ses.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === 'clipboard-sanitized-write' || permission === 'fullscreen'));
+  ses.on('will-download', (_event, item, wc) => {
+    const armed = Date.now() < t3kArmedUntil;
+    if (!armed && !t3kCapture) return; // a normal download to the Downloads folder
+    t3kArmedUntil = 0;
+    const dir = join(tmpdir(), `fretforge-t3k-${randomBytes(4).toString('hex')}`);
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, basename(item.getFilename() || 'model.nam'));
+    item.setSavePath(file);
+    const page = { ...t3kPage, url: t3kPage.url || wc?.getURL() };
+    main.webContents.send('ff:t3k:status', { state: 'downloading', name: item.getFilename() });
+    item.once('done', (_e, state) => {
+      try {
+        if (state !== 'completed' || !server) throw new Error(state === 'cancelled' ? 'Download cancelled.' : 'The download failed.');
+        const bytes = new Uint8Array(readFileSync(file));
+        const res = server.importRigFile(item.getFilename(), bytes, { kind: 'tone3000', url: page.url, creator: page.creator });
+        main.webContents.send('ff:t3k:status', { state: 'imported', name: item.getFilename(), added: res.added.length, existing: res.existing.length, errors: res.errors });
+      } catch (e) {
+        main.webContents.send('ff:t3k:status', { state: 'failed', name: item.getFilename(), message: (e as Error).message });
+      } finally {
+        try { rmSync(dir, { recursive: true, force: true }); } catch { /* temp */ }
+      }
+    });
+  });
+}
+ipcMain.on('ff:t3k:arm', (_e, page: { url?: string; title?: string; creator?: string }) => { t3kArmedUntil = Date.now() + 20_000; t3kPage = page ?? {}; });
+ipcMain.on('ff:t3k:page', (_e, page: { url?: string; title?: string; creator?: string }) => { t3kPage = page ?? {}; });
+ipcMain.on('ff:t3k:capture', (_e, on: boolean) => { t3kCapture = !!on; });
+ipcMain.handle('ff:t3k:captureState', () => t3kCapture);
 
 ipcMain.handle('ff:chooseFolder', async (_e, current?: string) => {
   const r = await dialog.showOpenDialog(win!, { title: 'Choose your library folder', defaultPath: current && existsSync(current) ? current : undefined, properties: ['openDirectory', 'createDirectory'] });

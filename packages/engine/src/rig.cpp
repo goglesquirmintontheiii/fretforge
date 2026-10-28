@@ -9,55 +9,6 @@
 
 namespace forge {
 
-namespace {
-constexpr float PI = 3.14159265358979f;
-inline float dbToGain(float db) { return std::pow(10.f, db / 20.f); }
-}
-
-void Biquad::lowCut(float sr, float hz) {
-  const float w = 2 * PI * hz / sr, c = std::cos(w), s = std::sin(w), alpha = s / (2 * 0.7071f);
-  const float a0 = 1 + alpha;
-  b0 = (1 + c) / 2 / a0; b1 = -(1 + c) / a0; b2 = (1 + c) / 2 / a0;
-  a1 = -2 * c / a0; a2 = (1 - alpha) / a0;
-  active = true;
-}
-void Biquad::highCut(float sr, float hz) {
-  const float w = 2 * PI * hz / sr, c = std::cos(w), s = std::sin(w), alpha = s / (2 * 0.7071f);
-  const float a0 = 1 + alpha;
-  b0 = (1 - c) / 2 / a0; b1 = (1 - c) / a0; b2 = (1 - c) / 2 / a0;
-  a1 = -2 * c / a0; a2 = (1 - alpha) / a0;
-  active = true;
-}
-void Biquad::peak(float sr, float hz, float q, float db) {
-  const float A = std::pow(10.f, db / 40.f), w = 2 * PI * hz / sr, c = std::cos(w), alpha = std::sin(w) / (2 * q);
-  const float a0 = 1 + alpha / A;
-  b0 = (1 + alpha * A) / a0; b1 = -2 * c / a0; b2 = (1 - alpha * A) / a0;
-  a1 = -2 * c / a0; a2 = (1 - alpha / A) / a0;
-  active = std::fabs(db) > 0.01f;
-}
-void Biquad::lowShelf(float sr, float hz, float db) {
-  const float A = std::pow(10.f, db / 40.f), w = 2 * PI * hz / sr, c = std::cos(w), s = std::sin(w);
-  const float alpha = s / 2 * std::sqrt(2.f), sa = 2 * std::sqrt(A) * alpha;
-  const float a0 = (A + 1) + (A - 1) * c + sa;
-  b0 = A * ((A + 1) - (A - 1) * c + sa) / a0;
-  b1 = 2 * A * ((A - 1) - (A + 1) * c) / a0;
-  b2 = A * ((A + 1) - (A - 1) * c - sa) / a0;
-  a1 = -2 * ((A - 1) + (A + 1) * c) / a0;
-  a2 = ((A + 1) + (A - 1) * c - sa) / a0;
-  active = std::fabs(db) > 0.01f;
-}
-void Biquad::highShelf(float sr, float hz, float db) {
-  const float A = std::pow(10.f, db / 40.f), w = 2 * PI * hz / sr, c = std::cos(w), s = std::sin(w);
-  const float alpha = s / 2 * std::sqrt(2.f), sa = 2 * std::sqrt(A) * alpha;
-  const float a0 = (A + 1) - (A - 1) * c + sa;
-  b0 = A * ((A + 1) + (A - 1) * c + sa) / a0;
-  b1 = -2 * A * ((A - 1) + (A + 1) * c) / a0;
-  b2 = A * ((A + 1) + (A - 1) * c - sa) / a0;
-  a1 = 2 * ((A - 1) - (A + 1) * c) / a0;
-  a2 = ((A + 1) - (A - 1) * c - sa) / a0;
-  active = std::fabs(db) > 0.01f;
-}
-
 Rig::Rig(float sampleRate, int maxBlock) : sr_(sampleRate), maxBlock_(maxBlock) {
   tmp_ = (float*)std::calloc((size_t)maxBlock, sizeof(float));
   for (float& v : p_) v = 0;

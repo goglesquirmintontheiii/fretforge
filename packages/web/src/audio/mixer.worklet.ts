@@ -4,8 +4,8 @@
 // pan, mute and solo, a metronome and count-in, seamless loops, and time-stretch/pitch-shift
 // through the forge-dsp engine. It never allocates while playing.
 //
-// "ff-rig" runs live input through the amp chain (browser fallback for the desktop engine).
-import { ForgeDsp, RigParam, type RigHandle, type NamHandle, type IrHandle } from './forgeDsp';
+// "ff-rig" runs live input through a rig chain (browser fallback for the desktop engine).
+import { ForgeDsp, type ChainHandle } from './forgeDsp';
 
 declare const sampleRate: number;
 declare function registerProcessor(name: string, ctor: unknown): void;
@@ -343,22 +343,28 @@ class MixerProcessor extends AudioWorkletProcessor {
 
 // ------------------------------------------------------------------ live rig
 
+export interface GraphPayload {
+  desc: Float32Array;
+  nams: { block: number; code: Int32Array; weights: Float32Array; gain: number }[];
+  irs: { block: number; slot: number; data: Float32Array }[];
+}
+
 type RigMsg =
   | { type: 'init'; wasm: ArrayBuffer }
-  | { type: 'nam'; code: Int32Array; weights: Float32Array; gain: number } | { type: 'nam'; code: null }
-  | { type: 'ir'; data: Float32Array | null }
-  | { type: 'param'; id: RigParam; value: number }
+  | ({ type: 'graph' } & GraphPayload)
+  | { type: 'control'; op: 'param' | 'enable' | 'trigger' | 'tempo' | 'quality' | 'io'; a: number; b?: number; c?: number }
   | { type: 'bypass'; on: boolean };
 
 class RigProcessor extends AudioWorkletProcessor {
   private dsp: ForgeDsp | null = null;
-  private rig: RigHandle | null = null;
-  private nam: NamHandle | null = null;
-  private ir: IrHandle | null = null;
-  private buf = 0;
+  private chain: ChainHandle | null = null;
+  private inBuf = 0;
+  private outL = 0;
+  private outR = 0;
   private bypass = false;
   private meterIn = 0;
   private load = 0;
+  private blocks = 0;
 
   constructor() {
     super();
@@ -368,52 +374,63 @@ class RigProcessor extends AudioWorkletProcessor {
   private async onMessage(m: RigMsg) {
     if (m.type === 'init') {
       this.dsp = await ForgeDsp.load(m.wasm);
-      this.rig = this.dsp.createRig(sampleRate, Q);
-      this.buf = this.dsp.e.ff_alloc(Q * 4);
+      this.chain = this.dsp.createChain(sampleRate, Q);
+      this.inBuf = this.dsp.e.ff_alloc(Q * 4);
+      this.outL = this.dsp.e.ff_alloc(Q * 4);
+      this.outR = this.dsp.e.ff_alloc(Q * 4);
       this.port.postMessage({ type: 'ready' });
       return;
     }
-    if (!this.dsp || !this.rig) return;
-    if (m.type === 'nam') {
-      const old = this.nam;
+    if (!this.dsp || !this.chain) return;
+    if (m.type === 'graph') {
       try {
-        this.nam = m.code ? this.dsp.createNam({ code: m.code, weights: m.weights }, Q) : null;
-        this.rig.setNam(this.nam);
-        if (m.code) this.rig.set(RigParam.NamGain, m.gain);
-        this.port.postMessage({ type: 'loaded', what: 'nam' });
+        // build off the audio path's hot loop; the chain crossfades it in
+        const g = this.dsp.createGraph(m.desc, sampleRate, Q);
+        for (const n of m.nams) g.setNam(n.block, { code: n.code, weights: n.weights }, n.gain);
+        for (const r of m.irs) g.setIr(r.block, r.slot, r.data);
+        this.blocks = g.blockCount;
+        const latency = g.latency;
+        this.chain.swap(g);
+        this.port.postMessage({ type: 'loaded', blocks: this.blocks, latency });
       } catch (e) {
         this.port.postMessage({ type: 'error', message: (e as Error).message });
       }
-      old?.destroy();
-    } else if (m.type === 'ir') {
-      const old = this.ir;
-      this.ir = m.data ? this.dsp.createIr(m.data, Q) : null;
-      this.rig.setIr(this.ir);
-      old?.destroy();
-    } else if (m.type === 'param') this.rig.set(m.id, m.value);
-    else if (m.type === 'bypass') this.bypass = m.on;
+    } else if (m.type === 'control') {
+      const c = this.chain;
+      switch (m.op) {
+        case 'param': c.setParam(m.a, m.b ?? 0, m.c ?? 0); break;
+        case 'enable': c.setEnabled(m.a, (m.b ?? 0) > 0.5); break;
+        case 'trigger': c.trigger(m.a, m.b ?? 0); break;
+        case 'tempo': c.setTempo(m.a); break;
+        case 'quality': c.setQuality(m.a); break;
+        case 'io': c.setIo(m.a, m.b ?? 0); break;
+      }
+    } else if (m.type === 'bypass') this.bypass = m.on;
   }
 
   process(inputs: Float32Array[][], outputs: Float32Array[][]): boolean {
     const input = inputs[0]?.[0];
     const out = outputs[0];
-    if (!input || !this.dsp || !this.rig) { for (const c of out) c.fill(0); return true; }
+    if (!input || !this.dsp || !this.chain) { for (const c of out) c.fill(0); return true; }
     const n = input.length;
     const t0 = Date.now();
     if (this.bypass) {
       for (const c of out) c.set(input);
     } else {
+      this.dsp.heapF32.set(input, this.inBuf >> 2);
+      this.chain.process(this.inBuf, this.outL, this.outR, n);
+      this.chain.collect();
       const heap = this.dsp.heapF32;
-      heap.set(input, this.buf >> 2);
-      this.rig.process(this.buf, this.buf, n);
-      const res = this.dsp.heapF32.subarray(this.buf >> 2, (this.buf >> 2) + n);
-      for (const c of out) c.set(res);
+      out[0].set(heap.subarray(this.outL >> 2, (this.outL >> 2) + n));
+      if (out[1]) out[1].set(heap.subarray(this.outR >> 2, (this.outR >> 2) + n));
     }
     this.load = Math.max(this.load * 0.995, (Date.now() - t0) / ((n / sampleRate) * 1000));
     if (++this.meterIn >= 12) {
       this.meterIn = 0;
-      const p = this.rig.peaks();
-      this.port.postMessage({ type: 'meter', input: p.input, output: p.output, load: this.load });
+      const p = this.chain.peaks();
+      const meters: number[] = [], states: number[] = [];
+      for (let b = 0; b < Math.min(64, this.blocks); b++) { meters.push(this.chain.blockMeter(b)); states.push(this.chain.blockState(b)); }
+      this.port.postMessage({ type: 'meter', input: p.input, output: p.output, load: this.load, tunerHz: this.chain.tunerHz(), blocks: meters, states, latency: this.chain.latency() });
     }
     return true;
   }

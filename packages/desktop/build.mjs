@@ -19,7 +19,7 @@ await build({
   logLevel: 'warning',
 });
 await build({
-  entryPoints: { preload: 'src/preload.ts' },
+  entryPoints: { preload: 'src/preload.ts', t3kPreload: 'src/t3kPreload.ts' },
   outdir: 'dist',
   outExtension: { '.js': '.cjs' },
   bundle: true,

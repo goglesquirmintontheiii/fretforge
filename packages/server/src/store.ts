@@ -4,7 +4,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import {
   defaultAi, defaultPrefs, USER_PREF_KEYS,
   type AudioAsset, type Comment, type Invite, type Job, type Playlist, type PracticeState, type Prefs, type PublicUser,
-  type Revision, type RigFile, type RigPreset, type Role, type ShareLink, type SongRecord,
+  type Revision, type RigDoc, type RigFile, type RigPreset, type Role, type Setlist, type ShareLink, type SongRecord,
 } from '@fretforge/shared';
 
 export interface UserRecord extends PublicUser {
@@ -15,6 +15,8 @@ export interface UserRecord extends PublicUser {
   prefs: Partial<Prefs>;
   /** comment ids that mention this user and haven't been seen */
   unreadMentions?: string[];
+  /** TONE3000 API session */
+  tone3000?: { access: string; refresh: string; expiresAt: number; username?: string };
 }
 
 export interface UserSongState {
@@ -43,6 +45,10 @@ interface DbShape {
   rigPresets: Record<string, RigPreset>;
   audio: Record<string, AudioAsset>;
   jobs: Record<string, Job>;
+  rigs: Record<string, RigDoc>;
+  setlists: Record<string, Setlist>;
+  /** small server-level values (UG device id ...) */
+  meta: Record<string, string>;
 }
 
 /** The user that owns a desktop install (and the first account of a v1 server database). */
@@ -78,7 +84,7 @@ export class Store {
   private empty(): DbShape {
     return {
       version: 2, songs: {}, prefs: { ...defaultPrefs }, users: {}, invites: {}, sessions: {}, userSongs: {}, history: {},
-      playlists: {}, comments: {}, revisions: {}, shares: {}, rigFiles: {}, rigPresets: {}, audio: {}, jobs: {},
+      playlists: {}, comments: {}, revisions: {}, shares: {}, rigFiles: {}, rigPresets: {}, audio: {}, jobs: {}, rigs: {}, setlists: {}, meta: {},
     };
   }
 
@@ -246,6 +252,8 @@ export class Store {
     delete this.db.userSongs[id];
     delete this.db.history[id];
     for (const p of Object.values(this.db.playlists)) if (p.ownerId === id) delete this.db.playlists[p.id];
+    for (const r of Object.values(this.db.rigs)) if (r.ownerId === id && !r.shared) delete this.db.rigs[r.id];
+    for (const sl of Object.values(this.db.setlists)) if (sl.ownerId === id) delete this.db.setlists[sl.id];
     this.changed();
   }
   ensureLocalUser(): UserRecord {
@@ -299,6 +307,23 @@ export class Store {
   rigPreset(id: string): RigPreset | undefined { return this.db.rigPresets[id]; }
   putRigPreset(p: RigPreset) { this.db.rigPresets[p.id] = p; this.changed(); }
   removeRigPreset(id: string) { delete this.db.rigPresets[id]; this.changed(); }
+  rigFileByHash(hash: string): RigFile | undefined { return Object.values(this.db.rigFiles).find((f) => f.hash === hash); }
+
+  // ------------------------------------------------------------------ rigs (rig editor) and setlists
+  rigs(): RigDoc[] { return Object.values(this.db.rigs).sort((a, b) => a.name.localeCompare(b.name)); }
+  rig(id: string): RigDoc | undefined { return this.db.rigs[id]; }
+  putRig(r: RigDoc) { this.db.rigs[r.id] = r; this.changed(); }
+  removeRig(id: string) {
+    delete this.db.rigs[id];
+    for (const sl of Object.values(this.db.setlists)) sl.rigIds = sl.rigIds.filter((x) => x !== id);
+    this.changed();
+  }
+  setlists(): Setlist[] { return Object.values(this.db.setlists).sort((a, b) => a.name.localeCompare(b.name)); }
+  setlist(id: string): Setlist | undefined { return this.db.setlists[id]; }
+  putSetlist(s: Setlist) { this.db.setlists[s.id] = s; this.changed(); }
+  removeSetlist(id: string) { delete this.db.setlists[id]; this.changed(); }
+  meta(key: string): string | undefined { return this.db.meta[key]; }
+  setMeta(key: string, value: string) { this.db.meta[key] = value; this.changed(); }
 
   // ------------------------------------------------------------------ audio
   audioFor(songId: string): AudioAsset[] {

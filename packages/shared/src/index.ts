@@ -4,3 +4,6 @@ export * from './chords';
 export * from './ugText';
 export * from './nam';
 export * from './wav';
+export * from './rigBlocks';
+export * from './rig';
+export * from './namTags';

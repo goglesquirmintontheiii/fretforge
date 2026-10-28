@@ -1,99 +1,92 @@
-// Web Worker: runs one chunk of a tab track through the amp chain (NAM + IR + EQ) offline.
-import { compileNam, decodeWav, namNormalizeGain, prepareIr, type AmpSettings, type CompiledNam } from '@fretforge/shared';
-import { ForgeDsp, RigParam, type IrHandle, type NamHandle } from './forgeDsp';
+// Web Worker: runs one chunk of a tab track through a rig graph offline.
+import { compileNam, decodeWav, namNormalizeGain, prepareIr, type CompiledNam } from '@fretforge/shared';
+import { ForgeDsp } from './forgeDsp';
 
-export interface AmpJob {
+export interface RigJob {
   id: number;
   wasm?: ArrayBuffer;
   sampleRate: number;
-  amp: AmpSettings;
-  /** cache keys so the model and IR are parsed once per worker */
-  namKey: string | null;
-  namText?: string;
-  /** smallest variant of slimmable models */
-  lite?: boolean;
-  irKey: string | null;
-  irBytes?: ArrayBuffer;
+  desc: Float32Array;
+  /** models: key for the worker cache, text only when the worker may not have it yet */
+  nams: { block: number; key: string; text?: string; lite: boolean }[];
+  irs: { block: number; slot: number; key: string; bytes?: ArrayBuffer }[];
+  tempo: number;
+  quality: number;
+  /** linear input gain (rig input level and DI normalisation) */
+  inputGain: number;
   input: Float32Array;
   /** leading samples that only warm the chain up and are dropped */
   pre: number;
 }
 
-export type AmpReply = { id: number; output: Float32Array } | { id: number; error: string } | { id: number; info: { prewarm: number; irLength: number; namGain: number } };
+export type RigReply =
+  | { id: number; L: Float32Array; R: Float32Array | null }
+  | { id: number; error: string }
+  | { id: number; missing: string[] };
 
 let dspP: Promise<ForgeDsp> | null = null;
-let namCache: { key: string; compiled: CompiledNam } | null = null;
-let irCache: { key: string; data: Float32Array } | null = null;
+const namCache = new Map<string, CompiledNam>();
+const irCache = new Map<string, Float32Array>();
 
-const post = (m: AmpReply, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
+const post = (m: RigReply, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
 
-self.onmessage = async (e: MessageEvent<AmpJob | { type: 'describe'; id: number; namText?: string; namKey: string | null; irBytes?: ArrayBuffer; irKey: string | null; sampleRate: number }>) => {
+function remember<V>(m: Map<string, V>, k: string, v: V, max: number) {
+  m.set(k, v);
+  while (m.size > max) m.delete(m.keys().next().value!);
+}
+
+self.onmessage = async (e: MessageEvent<RigJob>) => {
   const job = e.data;
   try {
-    if ('type' in job) {
-      const nam = job.namKey ? getNam(job.namKey, job.namText) : null;
-      const ir = job.irKey ? getIr(job.irKey, job.irBytes, job.sampleRate) : null;
-      post({ id: job.id, info: { prewarm: nam?.info.prewarmSamples ?? 0, irLength: ir?.length ?? 0, namGain: nam ? namNormalizeGain(nam.info) : 1 } });
-      return;
-    }
     if (!dspP) {
       if (!job.wasm) throw new Error('engine not loaded');
       dspP = ForgeDsp.load(job.wasm);
     }
     const dsp = await dspP;
-    const a = job.amp;
-    const compiled = a.namId && job.namKey ? getNam(job.namKey, job.namText, job.lite) : null;
-    const irData = a.irId && job.irKey ? getIr(job.irKey, job.irBytes, job.sampleRate) : null;
+    // models and IRs this worker hasn't seen and wasn't sent
+    const missing: string[] = [];
+    for (const n of job.nams) {
+      if (namCache.has(n.key)) continue;
+      if (!n.text) { missing.push(n.key); continue; }
+      remember(namCache, n.key, compileNam(n.text, { lite: n.lite }), 6);
+    }
+    for (const r of job.irs) {
+      if (irCache.has(r.key)) continue;
+      if (!r.bytes) { missing.push(r.key); continue; }
+      remember(irCache, r.key, prepareIr(decodeWav(new Uint8Array(r.bytes)), job.sampleRate), 12);
+    }
+    if (missing.length) { post({ id: job.id, missing }); return; }
+
     const block = 2048;
-    const rig = dsp.createRig(job.sampleRate, block);
-    let nam: NamHandle | null = null, ir: IrHandle | null = null;
+    const g = dsp.createGraph(job.desc, job.sampleRate, block, true);
     try {
-      if (compiled) { nam = dsp.createNam(compiled, block); rig.setNam(nam); rig.set(RigParam.NamGain, namNormalizeGain(compiled.info)); }
-      if (irData) { ir = dsp.createIr(irData, 128); rig.setIr(ir); }
-      rig.set(RigParam.InputDb, a.inputDb);
-      rig.set(RigParam.OutputDb, a.outputDb);
-      rig.set(RigParam.GateOn, a.gate ? 1 : 0);
-      rig.set(RigParam.GateDb, a.gateDb);
-      rig.set(RigParam.BassDb, a.bassDb);
-      rig.set(RigParam.MidDb, a.midDb);
-      rig.set(RigParam.TrebleDb, a.trebleDb);
-      rig.set(RigParam.LowCutHz, a.lowCutHz);
-      rig.set(RigParam.HighCutHz, a.highCutHz);
-      rig.set(RigParam.IrMix, a.irMix);
+      for (const n of job.nams) { const c = namCache.get(n.key)!; g.setNam(n.block, c, namNormalizeGain(c.info)); }
+      for (const r of job.irs) g.setIr(r.block, r.slot, irCache.get(r.key)!);
+      g.setQuality(job.quality);
+      g.setTempo(job.tempo);
       const input = job.input;
-      const out = new Float32Array(input.length - job.pre);
-      const buf = dsp.floats(block);
+      const len = input.length - job.pre;
+      const outL = new Float32Array(len);
+      const outR = new Float32Array(len);
+      const L = dsp.floats(block), R = dsp.floats(block);
+      let stereo = false;
       for (let i = 0; i < input.length; i += block) {
         const n = Math.min(block, input.length - i);
-        buf.view.set(input.subarray(i, i + n));
-        rig.process(buf.ptr, buf.ptr, n);
-        const v = buf.view;
-        // keep only what comes after the warm-up
+        const lv = L.view;
+        for (let k = 0; k < n; k++) lv[k] = input[i + k] * job.inputGain;
+        stereo = g.process(L.ptr, R.ptr, n) || stereo;
         const from = Math.max(0, job.pre - i);
-        if (from < n) out.set(v.subarray(from, n), i + from - job.pre);
+        if (from < n) {
+          outL.set(L.view.subarray(from, n), i + from - job.pre);
+          outR.set(R.view.subarray(from, n), i + from - job.pre);
+        }
       }
-      buf.free();
-      post({ id: job.id, output: out }, [out.buffer]);
+      L.free(); R.free();
+      post({ id: job.id, L: outL, R: stereo ? outR : null }, stereo ? [outL.buffer, outR.buffer] : [outL.buffer]);
     } finally {
-      rig.destroy();
-      nam?.destroy();
-      ir?.destroy();
+      g.destroy();
     }
   } catch (err) {
     post({ id: job.id, error: (err as Error).message || String(err) });
   }
 };
-
-function getNam(key: string, text?: string, lite = false): CompiledNam {
-  if (namCache?.key === key) return namCache.compiled;
-  if (!text) throw new Error('model text missing');
-  namCache = { key, compiled: compileNam(text, { lite }) };
-  return namCache.compiled;
-}
-
-function getIr(key: string, bytes: ArrayBuffer | undefined, sampleRate: number): Float32Array {
-  if (irCache?.key === key) return irCache.data;
-  if (!bytes) throw new Error('impulse response missing');
-  irCache = { key, data: prepareIr(decodeWav(new Uint8Array(bytes)), sampleRate) };
-  return irCache.data;
-}

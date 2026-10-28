@@ -4,11 +4,14 @@ import { useRef } from 'react';
  * A rotary control. Drag up/down (or left/right), scroll, or use the arrow keys; double-click
  * resets. It is a slider to assistive technology.
  */
-export function Knob({ label, value, min, max, step = 0.1, def, unit = '', onChange, format, size = 54, disabled }: {
+export function Knob({ label, value, min, max, step = 0.1, def, unit = '', onChange, format, size = 54, disabled, zero }: {
   label: string; value: number; min: number; max: number; step?: number; def?: number; unit?: string;
   onChange: (v: number) => void; format?: (v: number) => string; size?: number; disabled?: boolean;
+  /** where the fill starts (a value); defaults to 0 for ranges that cross zero */
+  zero?: number;
 }) {
   const drag = useRef<{ y: number; x: number; v: number } | null>(null);
+  const zeroAt = zero;
   const clamp = (v: number) => Math.min(max, Math.max(min, Math.round(v / step) * step));
   const frac = (value - min) / (max - min || 1);
   const angle = -135 + frac * 270;
@@ -48,9 +51,9 @@ export function Knob({ label, value, min, max, step = 0.1, def, unit = '', onCha
       >
         <svg width={size} height={size} aria-hidden="true">
           <path d={arc(-135, 135)} className="track" />
-          {min < 0 && max > 0 ? (() => {
+          {(zero !== undefined ? zero > min : min < 0 && max > 0) ? (() => {
             // bipolar: fill from the zero position
-            const zero = -135 + ((0 - min) / (max - min)) * 270;
+            const zero = -135 + (((zeroAt ?? 0) - min) / (max - min)) * 270;
             return Math.abs(angle - zero) > 1 ? <path d={angle > zero ? arc(zero, angle) : arc(angle, zero)} className="fill" /> : null;
           })() : frac > 0.005 && <path d={arc(-135, angle)} className="fill" />}
           <circle cx={size / 2} cy={size / 2} r={r - 6} className="cap" />

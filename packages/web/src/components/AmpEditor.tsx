@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
-import { defaultAmp, type AmpSettings, type RigFile, type RigPreset } from '@fretforge/shared';
-import { api } from '../api';
+import { defaultAmp, type AmpSettings, type NamRole, type RigFile, type RigPreset } from '@fretforge/shared';
+import { api, type RigImport } from '../api';
+
+/** "Added 3 models, 1 IR (2 were already there)" */
+export function importSummary(r: RigImport): string {
+  const nams = r.added.filter((f) => f.kind === 'nam').length, irs = r.added.length - nams;
+  const parts = [nams ? `${nams} model${nams === 1 ? '' : 's'}` : '', irs ? `${irs} IR${irs === 1 ? '' : 's'}` : ''].filter(Boolean);
+  let s = parts.length ? `Added ${parts.join(' and ')}` : r.existing.length ? 'Already in your library' : 'Nothing was added';
+  if (parts.length && r.existing.length) s += ` (${r.existing.length} already there)`;
+  if (r.errors.length) s += `. ${r.errors[0].name}: ${r.errors[0].message}${r.errors.length > 1 ? ` (+${r.errors.length - 1} more)` : ''}`;
+  return s;
+}
 import { useApp } from '../lib/app';
 import { Knob } from './Knob';
 import { Icon } from './icons';
@@ -34,7 +44,7 @@ export function describeRigFile(f: RigFile): string {
   return [`${f.info.lengthMs} ms`, `${Math.round(Number(f.info.sampleRate) / 100) / 10} kHz`, f.info.channels === 2 ? 'stereo' : 'mono'].join(' · ');
 }
 
-export function useUpload(kind?: 'nam' | 'ir') {
+export function useUpload(kind?: 'nam' | 'ir', role?: NamRole) {
   const { toast } = useApp();
   const input = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
@@ -42,17 +52,16 @@ export function useUpload(kind?: 'nam' | 'ir') {
     const el = document.createElement('input');
     el.type = 'file';
     el.multiple = true;
-    el.accept = kind === 'nam' ? '.nam' : kind === 'ir' ? '.wav' : '.nam,.wav';
+    el.accept = kind === 'nam' ? '.nam,.zip' : kind === 'ir' ? '.wav,.zip' : '.nam,.wav,.zip';
     el.onchange = async () => {
       const fs = [...(el.files ?? [])];
       if (!fs.length) return;
       setBusy(true);
       try {
-        const r = await api.uploadRigFiles(fs);
+        const r = await api.uploadRigFiles(fs, role ?? 'auto');
         await refreshRigFiles();
-        if (r.errors.length) toast(`${r.errors[0].name}: ${r.errors[0].message}`);
-        else toast(`Added ${r.added.length} file${r.added.length === 1 ? '' : 's'} to the rig library`);
-        onAdded?.(r.added);
+        toast(importSummary(r));
+        onAdded?.([...r.added, ...r.existing]);
       } catch (e) {
         toast((e as Error).message);
       } finally {

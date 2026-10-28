@@ -16,6 +16,10 @@ import { registerCore } from './routes/core';
 import { registerSongs } from './routes/songs';
 import { registerRig } from './routes/rig';
 import { registerAudio } from './routes/audio';
+import { registerNam } from './routes/nam';
+import { importRigBytes, type ImportResult } from './routes/rig';
+import { LOCAL_USER_ID } from './store';
+import type { RigFileSource } from '@fretforge/shared';
 
 export interface FretforgeServer {
   app: FastifyInstance;
@@ -24,6 +28,8 @@ export interface FretforgeServer {
   jobs: JobRunner;
   url: string;
   close(): Promise<void>;
+  /** desktop: files downloaded in the embedded TONE3000 page */
+  importRigFile(name: string, bytes: Uint8Array, source?: RigFileSource): ImportResult;
 }
 
 export interface Ctx {
@@ -37,7 +43,7 @@ export interface Ctx {
 }
 
 /** Paths that work without signing in. Share links and invites carry their own token. */
-const OPEN = [/^\/api\/status$/, /^\/api\/login$/, /^\/api\/setup$/, /^\/api\/auth\/oidc\//, /^\/api\/invites\/[\w-]+(\/accept)?$/, /^\/api\/share\/[\w-]+(\/file)?$/];
+const OPEN = [/^\/api\/status$/, /^\/api\/login$/, /^\/api\/setup$/, /^\/api\/auth\/oidc\//, /^\/api\/invites\/[\w-]+(\/accept)?$/, /^\/api\/share\/[\w-]+(\/file)?$/, /^\/api\/nam\/tone3000\/callback$/];
 
 export async function createServer(cfg: ServerConfig, providerCtx?: Partial<ProviderContext>): Promise<FretforgeServer> {
   const store = new Store(cfg.dataDir);
@@ -91,6 +97,7 @@ export async function createServer(cfg: ServerConfig, providerCtx?: Partial<Prov
   registerSongs(app, ctx);
   registerRig(app, ctx);
   registerAudio(app, ctx);
+  registerNam(app, ctx);
 
   // ------------------------------------------------------------ web app
   if (cfg.staticDir && existsSync(cfg.staticDir)) {
@@ -118,5 +125,6 @@ export async function createServer(cfg: ServerConfig, providerCtx?: Partial<Prov
       store.flush();
       await app.close();
     },
+    importRigFile: (name, bytes, source) => importRigBytes(store, cfg.dataDir, cfg.mode === 'desktop' ? LOCAL_USER_ID : null, name, bytes, { source, tags: source?.kind === 'tone3000' ? ['tone3000'] : [] }),
   };
 }
